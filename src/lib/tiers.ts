@@ -76,7 +76,15 @@ export interface ExtractResult {
   isPdf: boolean
   sheets: Sheet[]
   usage?: Record<string, unknown>
+  /** USD billed by OpenRouter for this extraction. Absent if it went unreported. */
+  cost?: number
   engineUsed?: string
+}
+
+/** Costs are often fractions of a cent, so keep 4 decimals until it's real money. */
+export function formatCost(cost: number): string {
+  if (cost <= 0) return "$0"
+  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`
 }
 
 export interface SessionInfo {

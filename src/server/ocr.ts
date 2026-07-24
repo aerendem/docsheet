@@ -59,7 +59,20 @@ export interface OcrResult {
   model: string
   isPdf: boolean
   usage?: Record<string, unknown>
+  /** USD actually billed by OpenRouter, summed over every call this run made. */
+  cost?: number
   engineUsed?: string
+}
+
+/** OpenRouter reports `usage.cost` in USD when usage accounting is enabled. */
+function costOf(usage: Record<string, unknown> | undefined): number | undefined {
+  const cost = usage?.cost
+  return typeof cost === "number" ? cost : undefined
+}
+
+function sumCost(...costs: Array<number | undefined>): number | undefined {
+  const known = costs.filter((c): c is number => typeof c === "number")
+  return known.length ? known.reduce((a, b) => a + b, 0) : undefined
 }
 
 function buildContent(
@@ -89,11 +102,13 @@ async function callModel(
   model: string,
   content: Array<Record<string, unknown>>,
   pdfEngine: string | undefined,
-): Promise<{ sheets: Sheet[]; usage?: Record<string, unknown> }> {
+): Promise<{ sheets: Sheet[]; usage?: Record<string, unknown>; cost?: number }> {
   const payload: Record<string, unknown> = {
     model,
     temperature: 0,
     response_format: { type: "json_object" },
+    // Ask OpenRouter to report what the call actually cost.
+    usage: { include: true },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content },
@@ -116,7 +131,7 @@ async function callModel(
   if (typeof text !== "string") {
     throw new OcrError(502, "Unexpected response shape from the model.")
   }
-  return { sheets: normalizeSheets(text), usage: body?.usage }
+  return { sheets: normalizeSheets(text), usage: body?.usage, cost: costOf(body?.usage) }
 }
 
 export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResult> {
@@ -133,7 +148,7 @@ export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResul
   if (!isPdf) {
     const content = buildContent(file, false, bytesToBase64(file.bytes))
     const r = await callModel(apiKey, model, content, undefined)
-    return { sheets: r.sheets, model, isPdf: false, usage: r.usage }
+    return { sheets: r.sheets, model, isPdf: false, usage: r.usage, cost: r.cost }
   }
 
   // PDFs use OpenRouter's file-parser. "auto" tries the free text layer first,
@@ -144,14 +159,29 @@ export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResul
   if (requested === "auto") {
     const viaText = await callModel(apiKey, model, content, "pdf-text")
     if (hasContent(viaText.sheets)) {
-      return { sheets: viaText.sheets, model, isPdf: true, usage: viaText.usage, engineUsed: "pdf-text" }
+      return {
+        sheets: viaText.sheets,
+        model,
+        isPdf: true,
+        usage: viaText.usage,
+        cost: viaText.cost,
+        engineUsed: "pdf-text",
+      }
     }
+    // The empty text-layer attempt was still billed — count it.
     const viaOcr = await callModel(apiKey, model, content, "mistral-ocr")
-    return { sheets: viaOcr.sheets, model, isPdf: true, usage: viaOcr.usage, engineUsed: "mistral-ocr" }
+    return {
+      sheets: viaOcr.sheets,
+      model,
+      isPdf: true,
+      usage: viaOcr.usage,
+      cost: sumCost(viaText.cost, viaOcr.cost),
+      engineUsed: "mistral-ocr",
+    }
   }
 
   const r = await callModel(apiKey, model, content, requested)
-  return { sheets: r.sheets, model, isPdf: true, usage: r.usage, engineUsed: requested }
+  return { sheets: r.sheets, model, isPdf: true, usage: r.usage, cost: r.cost, engineUsed: requested }
 }
 
 async function callOpenRouter(

@@ -4,6 +4,7 @@ import {
   DEFAULT_PDF_ENGINE,
   DEFAULT_TIER,
   type ExtractResult,
+  formatCost,
   PDF_ENGINES,
   type QualityTier,
   type SessionInfo,
@@ -193,7 +194,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       setActiveSheet(0)
       const n = r.sheets.length
       const via = r.isPdf && r.engineUsed ? ` · ${engineLabel(r.engineUsed)}` : ""
-      setStatus(`✨ ${n} table${n === 1 ? "" : "s"} · ${r.model}${via}`)
+      const spend = typeof r.cost === "number" ? ` · ${formatCost(r.cost)}` : ""
+      setStatus(`✨ ${n} table${n === 1 ? "" : "s"} · ${r.model}${via}${spend}`)
     } catch (e) {
       setError((e as Error).message)
       setStatus(null)
@@ -236,17 +238,19 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   return (
     <main className="demo-page demo-page-wide">
       {/* hero */}
-      <header className="relative mb-8 overflow-visible">
-        {session.authRequired && (
-          <button
-            type="button"
-            onClick={onLogout}
-            className="demo-button demo-button-secondary absolute right-0 top-0 !px-4 !py-2 text-xs"
-          >
-            🔒 Lock
-          </button>
-        )}
-        <p className="island-kicker mb-2">PDF &amp; image → spreadsheet</p>
+      <header className="mb-8">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <p className="island-kicker">PDF &amp; image → spreadsheet</p>
+          {session.authRequired && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="demo-button demo-button-secondary flex-shrink-0 !px-4 !py-2 text-xs"
+            >
+              🔒 Lock
+            </button>
+          )}
+        </div>
         <h1 className="demo-title mb-3">
           Turn documents into <span className="accent-text">spreadsheets</span>.
         </h1>

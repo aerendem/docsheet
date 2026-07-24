@@ -251,9 +251,12 @@ code {
 .demo-button:hover:not(:disabled) {
   background: var(--violet-deep);
 }
+/* A muted solid, not a faded accent — 45% violet was unreadable on dark. */
 .demo-button:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  background: var(--surface-sunken);
+  border-color: var(--line);
+  color: var(--ink-soft);
 }
 .demo-button-secondary {
   background: var(--surface);
