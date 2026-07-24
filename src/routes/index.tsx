@@ -1,5 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { type FormEvent, useEffect, useRef, useState } from "react"
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react"
+import {
+  IconAlert,
+  IconDownload,
+  IconFile,
+  IconLock,
+  IconSparkle,
+  IconUpload,
+} from "../components/icons"
 import {
   DEFAULT_PDF_ENGINE,
   DEFAULT_TIER,
@@ -40,6 +48,21 @@ function toCsv(sheet: Sheet): string {
   if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(","))
   for (const row of sheet.rows) lines.push(row.map(esc).join(","))
   return "﻿" + lines.join("\r\n")
+}
+
+/**
+ * Is this cell a figure? Tolerates currency and both decimal conventions
+ * ("1.250,00" and "1,250.00") but rejects codes like "15202ST" so reference
+ * columns stay left-aligned.
+ */
+function isNumericCell(value: string): boolean {
+  const core = value
+    .trim()
+    .replace(/^[-+]?\s*/, "")
+    .replace(/^(?:[$€£₺¥]|TL|USD|EUR|GBP|TRY)\s*/i, "")
+    .replace(/\s*(?:[$€£₺¥]|TL|USD|EUR|GBP|TRY|%)$/i, "")
+    .trim()
+  return /^\d[\d.,'\s]*$/.test(core)
 }
 
 const stem = (name: string) =>
@@ -121,25 +144,29 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
     <main className="demo-page demo-center">
       <form onSubmit={submit} className="demo-panel rise-in w-full max-w-sm text-center">
         <div
-          className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl text-2xl"
-          style={{ background: "var(--violet-soft)" }}
+          className="mx-auto mb-5 grid h-12 w-12 place-items-center rounded-xl"
+          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
         >
-          🔒
+          <IconLock size={20} />
         </div>
-        <p className="island-kicker mb-1">docsheet</p>
+        <p className="island-kicker mb-2">docsheet</p>
         <h1 className="display-title mb-2 text-2xl font-extrabold">Private workspace</h1>
-        <p className="demo-muted mb-5 text-sm">Enter the password to continue.</p>
+        <p className="demo-muted mb-6 text-sm">Enter the password to continue.</p>
         <input
           autoFocus
           type="password"
-          className="demo-input mb-3 text-center tracking-widest"
+          className="demo-input mb-3 text-center tracking-[0.3em]"
           placeholder="••••••••••"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
         />
         {err && (
-          <p className="mb-3 text-sm font-semibold" style={{ color: "var(--pink)" }}>
-            ⚠ {err}
+          <p
+            className="mb-3 flex items-center justify-center gap-1.5 text-sm font-semibold"
+            style={{ color: "var(--danger)" }}
+          >
+            <IconAlert size={15} />
+            {err}
           </p>
         )}
         <button type="submit" className="demo-button w-full" disabled={busy || !pw}>
@@ -195,7 +222,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       const n = r.sheets.length
       const via = r.isPdf && r.engineUsed ? ` · ${engineLabel(r.engineUsed)}` : ""
       const spend = typeof r.cost === "number" ? ` · ${formatCost(r.cost)}` : ""
-      setStatus(`✨ ${n} table${n === 1 ? "" : "s"} · ${r.model}${via}${spend}`)
+      setStatus(`${n} table${n === 1 ? "" : "s"} · ${r.model}${via}${spend}`)
     } catch (e) {
       setError((e as Error).message)
       setStatus(null)
@@ -235,8 +262,25 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const sheet = result?.sheets[activeSheet]
   const showPdfEngine = file ? isPdfFile(file) : false
 
+  // A column is a figure column only when every filled cell in it is a figure.
+  const numericColumns = useMemo(() => {
+    if (!sheet) return []
+    const rows = sheet.rows.slice(0, PREVIEW_ROWS)
+    const width = Math.max(sheet.columns.length, ...rows.map((r) => r.length), 0)
+    return Array.from({ length: width }, (_, ci) => {
+      let filled = 0
+      for (const row of rows) {
+        const cell = row[ci] ?? ""
+        if (!cell.trim()) continue
+        if (!isNumericCell(cell)) return false
+        filled++
+      }
+      return filled > 0
+    })
+  }, [sheet])
+
   return (
-    <main className="demo-page demo-page-wide">
+    <main className="demo-page">
       {/* hero */}
       <header className="mb-8">
         <div className="mb-2 flex items-center justify-between gap-3">
@@ -245,14 +289,17 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             <button
               type="button"
               onClick={onLogout}
-              className="demo-button demo-button-secondary flex-shrink-0 !px-4 !py-2 text-xs"
+              className="demo-button demo-button-secondary flex-shrink-0 !px-3.5 !py-1.5 text-xs"
             >
-              🔒 Lock
+              <IconLock size={14} />
+              Lock
             </button>
           )}
         </div>
+        {/* Only the full stop carries the accent — the eye should land on the
+            CTA, not on a noun in the headline. */}
         <h1 className="demo-title mb-3">
-          Turn documents into <span className="accent-text">spreadsheets</span>.
+          Turn documents into spreadsheets<span className="accent-text">.</span>
         </h1>
         <p className="demo-muted max-w-2xl text-base sm:text-lg">
           Drop a PDF or photo — the best OCR models pull out every table. Preview, then
@@ -262,10 +309,19 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
       {session.keyConfigured === false && (
         <div className="demo-alert mb-6">
-          <strong>No OpenRouter key set.</strong> Extraction needs <code>OPENROUTER_API_KEY</code> on the server.
+          <IconAlert size={17} className="mt-px flex-shrink-0" />
+          <span>
+            <strong>No OpenRouter key set.</strong> Extraction needs{" "}
+            <code>OPENROUTER_API_KEY</code> on the server.
+          </span>
         </div>
       )}
-      {error && <div className="demo-alert demo-alert-danger mb-6">⚠️ {error}</div>}
+      {error && (
+        <div className="demo-alert demo-alert-danger mb-6">
+          <IconAlert size={17} className="mt-px flex-shrink-0" style={{ color: "var(--danger)" }} />
+          <span>{error}</span>
+        </div>
+      )}
 
       <section className="demo-panel rise-in">
         {/* dropzone */}
@@ -286,26 +342,35 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             setDragging(false)
             pickFile(e.dataTransfer.files?.[0])
           }}
-          className="flex w-full flex-col items-center justify-center rounded-3xl border-2 border-dashed p-9 text-center transition"
+          className="flex w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center transition"
           style={{
-            borderColor: dragging ? "var(--violet)" : "var(--line-strong)",
-            background: dragging ? "var(--violet-soft)" : "var(--surface-sunken)",
+            borderColor: dragging ? "var(--accent)" : "var(--line-strong)",
+            background: dragging ? "var(--accent-soft)" : "var(--surface-sunken)",
           }}
         >
-          <span className="mb-2 text-4xl" aria-hidden>
-            {file ? "📄" : "🪄"}
+          <span
+            className="grid h-11 w-11 place-items-center rounded-full"
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--line)",
+              color: dragging ? "var(--accent)" : "var(--ink-soft)",
+            }}
+          >
+            {file ? <IconFile size={20} /> : <IconUpload size={20} />}
           </span>
           {file ? (
             <span className="demo-pill">
               {file.name} · {(file.size / 1024).toFixed(0)} KB
             </span>
           ) : (
-            <>
+            <span className="flex flex-col gap-1">
               <span className="font-bold" style={{ color: "var(--ink)" }}>
                 Drop a PDF or image, or click to browse
               </span>
-              <span className="demo-muted mt-1 text-sm">PDF · PNG · JPG · WEBP · TIFF · max 25 MB</span>
-            </>
+              <span className="demo-muted text-sm">
+                PDF · PNG · JPG · WEBP · TIFF · max 25 MB
+              </span>
+            </span>
           )}
         </button>
         <input
@@ -318,8 +383,10 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
         {/* quality */}
         <div className="mt-6">
-          <p className="demo-section-title mb-2">Quality</p>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <p className="demo-section-title mb-3">Quality</p>
+          {/* items-stretch + mt-auto keeps every price hint on one baseline,
+              however many lines the blurb above it wraps to. */}
+          <div className="grid items-stretch gap-3 sm:grid-cols-3">
             {TIERS.map((t) => {
               const active = tier === t.id
               return (
@@ -327,20 +394,28 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                   key={t.id}
                   type="button"
                   onClick={() => setTier(t.id)}
-                  className="demo-card text-left transition"
+                  aria-pressed={active}
+                  className="demo-card flex flex-col text-left transition"
                   style={{
-                    borderColor: active ? "var(--violet)" : "var(--line)",
-                    background: active ? "var(--violet-soft)" : undefined,
+                    borderColor: active ? "var(--accent)" : "var(--line)",
+                    boxShadow: active ? "0 0 0 1px var(--accent)" : undefined,
                   }}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex h-5 items-center justify-between gap-2">
                     <span className="font-extrabold" style={{ color: "var(--ink)" }}>
                       {t.label}
                     </span>
-                    {t.id === DEFAULT_TIER && <span className="demo-pill">pick</span>}
+                    {active && (
+                      <span
+                        className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                        style={{ background: "var(--accent)" }}
+                      />
+                    )}
                   </div>
-                  <p className="demo-muted mt-1 text-sm">{t.blurb}</p>
-                  <p className="demo-muted mt-2 text-xs opacity-80">{t.priceHint}</p>
+                  <p className="demo-muted mt-2 text-sm leading-snug">{t.blurb}</p>
+                  <p className="mt-auto pt-3 text-xs" style={{ color: "var(--ink-faint)" }}>
+                    {t.priceHint}
+                  </p>
                 </button>
               )
             })}
@@ -377,9 +452,10 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           </div>
         </details>
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-3">
           <button type="button" className="demo-button" disabled={!file || loading} onClick={onExtract}>
-            {loading ? "Extracting…" : "✨ Extract tables"}
+            <IconSparkle size={16} />
+            {loading ? "Extracting…" : "Extract tables"}
           </button>
           {status && <span className="demo-muted text-sm font-semibold">{status}</span>}
         </div>
@@ -388,18 +464,14 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       {/* results */}
       {result && sheet && (
         <section className="demo-panel rise-in mt-6">
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-4 flex flex-wrap gap-2">
             {result.sheets.map((s, i) => (
               <button
                 key={`${s.name}-${i}`}
                 type="button"
                 onClick={() => setActiveSheet(i)}
-                className="demo-pill"
-                style={{
-                  borderColor: i === activeSheet ? "var(--violet)" : "var(--chip-line)",
-                  color: i === activeSheet ? "var(--violet-deep)" : "var(--ink-soft)",
-                  background: i === activeSheet ? "var(--violet-soft)" : "var(--chip-bg)",
-                }}
+                aria-pressed={i === activeSheet}
+                className={`demo-pill${i === activeSheet ? " demo-pill-active" : ""}`}
               >
                 {s.name || `Sheet ${i + 1}`} · {s.rows.length}
               </button>
@@ -411,7 +483,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               <thead>
                 <tr>
                   {sheet.columns.map((c, i) => (
-                    <th key={i}>{c}</th>
+                    <th key={i} className={numericColumns[i] ? "is-numeric" : undefined}>
+                      {c}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -419,22 +493,25 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 {sheet.rows.slice(0, PREVIEW_ROWS).map((row, ri) => (
                   <tr key={ri}>
                     {row.map((cell, ci) => (
-                      <td key={ci}>{cell}</td>
+                      <td key={ci} className={numericColumns[ci] ? "is-numeric" : undefined}>
+                        {cell}
+                      </td>
                     ))}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="demo-muted mt-2 text-sm">
+          <p className="demo-muted mt-3 text-sm">
             {sheet.rows.length > PREVIEW_ROWS
               ? `Showing first ${PREVIEW_ROWS} of ${sheet.rows.length} rows — the download has them all.`
               : `${sheet.rows.length} row${sheet.rows.length === 1 ? "" : "s"}.`}
           </p>
 
-          <div className="mt-4 flex flex-wrap gap-3">
+          <div className="mt-5 flex flex-wrap gap-2.5">
             <button type="button" className="demo-button" disabled={busyFmt !== null} onClick={() => onDownload("xlsx")}>
-              {busyFmt === "xlsx" ? "Preparing…" : "⬇︎ Excel"}
+              <IconDownload size={16} />
+              {busyFmt === "xlsx" ? "Preparing…" : "Excel"}
             </button>
             <button
               type="button"
@@ -442,7 +519,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               disabled={busyFmt !== null}
               onClick={() => onDownload("csv")}
             >
-              ⬇︎ CSV
+              <IconDownload size={16} />
+              CSV
             </button>
             <button
               type="button"
@@ -450,7 +528,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               disabled={busyFmt !== null}
               onClick={() => onDownload("json")}
             >
-              ⬇︎ JSON
+              <IconDownload size={16} />
+              JSON
             </button>
           </div>
         </section>
