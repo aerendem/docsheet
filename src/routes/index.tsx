@@ -297,7 +297,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             </span>
           ) : (
             <>
-              <span className="font-bold" style={{ color: "var(--sea-ink)" }}>
+              <span className="font-bold" style={{ color: "var(--ink)" }}>
                 Drop a PDF or image, or click to browse
               </span>
               <span className="demo-muted mt-1 text-sm">PDF · PNG · JPG · WEBP · TIFF · max 25 MB</span>
@@ -330,7 +330,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                   }}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-extrabold" style={{ color: "var(--sea-ink)" }}>
+                    <span className="font-extrabold" style={{ color: "var(--ink)" }}>
                       {t.label}
                     </span>
                     {t.id === DEFAULT_TIER && <span className="demo-pill">pick</span>}
@@ -393,7 +393,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 className="demo-pill"
                 style={{
                   borderColor: i === activeSheet ? "var(--violet)" : "var(--chip-line)",
-                  color: i === activeSheet ? "var(--violet-deep)" : "var(--sea-ink-soft)",
+                  color: i === activeSheet ? "var(--violet-deep)" : "var(--ink-soft)",
                   background: i === activeSheet ? "var(--violet-soft)" : "var(--chip-bg)",
                 }}
               >

@@ -14,29 +14,19 @@
   --violet-soft: #efecff;
   --pink: #ff8fb4;
   --pink-soft: #ffeef4;
-  --mint: #4fcfae;
-  --peach: #ffb583;
   --peach-soft: #fff2e6;
 
-  /* legacy aliases so existing markup recolours automatically */
-  --sea-ink: #241f45;
-  --sea-ink-soft: #6f679a;
-  --lagoon: #7c6bf5;
-  --lagoon-deep: #6553df;
-  --palm: #4fcfae;
-  --sand: #f2eefb;
-  --foam: #f7f5fc;
+  --ink: #241f45;
+  --ink-soft: #6f679a;
 
   --surface: #ffffff;
-  --surface-strong: #ffffff;
   --surface-sunken: #f8f6fd;
   --line: #e7e2f4;
   --line-strong: #d9d2ee;
-  --inset-glint: transparent;
   --kicker: #8074b8;
 
   --bg-base: #f6f4fb;
-  --header-bg: rgba(246, 244, 251, 0.85);
+  --header-bg: #f6f4fb;
   --chip-bg: #ffffff;
   --chip-line: #e7e2f4;
   --link-bg-hover: #f2effc;
@@ -56,22 +46,17 @@
   --pink-soft: #3a2440;
   --peach-soft: #3a2c22;
 
-  --sea-ink: #ece9ff;
-  --sea-ink-soft: #a49bd0;
-  --lagoon: #a99bff;
-  --lagoon-deep: #bcb0ff;
-  --sand: #191436;
-  --foam: #1b1740;
+  --ink: #ece9ff;
+  --ink-soft: #a49bd0;
 
   --surface: #1c1740;
-  --surface-strong: #1c1740;
   --surface-sunken: #171232;
   --line: #2e2760;
   --line-strong: #3a3178;
   --kicker: #a99bff;
 
   --bg-base: #120e2b;
-  --header-bg: rgba(18, 14, 43, 0.85);
+  --header-bg: #120e2b;
   --chip-bg: #221c4c;
   --chip-line: #2e2760;
   --link-bg-hover: #2a2358;
@@ -87,20 +72,15 @@
     --pink: #ff9dbe;
     --pink-soft: #3a2440;
     --peach-soft: #3a2c22;
-    --sea-ink: #ece9ff;
-    --sea-ink-soft: #a49bd0;
-    --lagoon: #a99bff;
-    --lagoon-deep: #bcb0ff;
-    --sand: #191436;
-    --foam: #1b1740;
+    --ink: #ece9ff;
+    --ink-soft: #a49bd0;
     --surface: #1c1740;
-    --surface-strong: #1c1740;
     --surface-sunken: #171232;
     --line: #2e2760;
     --line-strong: #3a3178;
     --kicker: #a99bff;
     --bg-base: #120e2b;
-    --header-bg: rgba(18, 14, 43, 0.85);
+    --header-bg: #120e2b;
     --chip-bg: #221c4c;
     --chip-line: #2e2760;
     --link-bg-hover: #2a2358;
@@ -120,12 +100,16 @@ body,
 
 body {
   margin: 0;
-  color: var(--sea-ink);
+  color: var(--ink);
   font-family: var(--font-sans);
   background-color: var(--bg-base);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--violet) 26%, transparent);
 }
 
 a {
@@ -173,7 +157,7 @@ code {
   width: min(1080px, calc(100% - 2rem));
   margin-inline: auto;
   padding-block: clamp(1.5rem, 5vw, 3.25rem);
-  color: var(--sea-ink);
+  color: var(--ink);
 }
 .demo-page-wide {
   width: min(1180px, calc(100% - 2rem));
@@ -196,19 +180,19 @@ code {
 
 .demo-title {
   margin: 0;
-  color: var(--sea-ink);
+  color: var(--ink);
   font-size: clamp(1.9rem, 4.6vw, 2.9rem);
   line-height: 1.06;
   font-weight: 800;
 }
 .demo-section-title {
   margin: 0;
-  color: var(--sea-ink);
+  color: var(--ink);
   font-size: 0.95rem;
   font-weight: 700;
 }
 .demo-muted {
-  color: var(--sea-ink-soft);
+  color: var(--ink-soft);
 }
 
 .island-kicker {
@@ -227,7 +211,7 @@ code {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  color: var(--sea-ink);
+  color: var(--ink);
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   font-size: 0.95rem;
@@ -243,7 +227,7 @@ code {
   box-shadow: 0 0 0 3px var(--violet-soft);
 }
 .demo-input::placeholder {
-  color: color-mix(in oklab, var(--sea-ink-soft) 65%, transparent);
+  color: color-mix(in oklab, var(--ink-soft) 65%, transparent);
 }
 
 /* ── buttons: flat solid pills ─────────────────────────────────────────── */
@@ -273,7 +257,7 @@ code {
 }
 .demo-button-secondary {
   background: var(--surface);
-  color: var(--sea-ink);
+  color: var(--ink);
   border-color: var(--line-strong);
 }
 .demo-button-secondary:hover:not(:disabled) {
@@ -305,7 +289,7 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--peach-soft);
-  color: var(--sea-ink);
+  color: var(--ink);
   padding: 0.85rem 1.05rem;
 }
 .demo-alert-danger {
@@ -323,7 +307,7 @@ code {
 .demo-table {
   width: 100%;
   border-collapse: collapse;
-  color: var(--sea-ink);
+  color: var(--ink);
   font-size: 0.85rem;
 }
 .demo-table th,
@@ -337,7 +321,7 @@ code {
   position: sticky;
   top: 0;
   background: var(--surface-sunken);
-  color: var(--sea-ink);
+  color: var(--ink);
   font-weight: 700;
   z-index: 1;
 }
@@ -349,13 +333,13 @@ code {
 .nav-link {
   display: inline-flex;
   align-items: center;
-  color: var(--sea-ink-soft);
+  color: var(--ink-soft);
   text-decoration: none;
   font-weight: 600;
 }
 .nav-link:hover,
 .nav-link.is-active {
-  color: var(--sea-ink);
+  color: var(--ink);
 }
 .site-footer {
   border-top: 1px solid var(--line);
