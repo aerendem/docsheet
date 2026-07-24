@@ -120,8 +120,8 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
     <main className="demo-page demo-center">
       <form onSubmit={submit} className="demo-panel rise-in w-full max-w-sm text-center">
         <div
-          className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-3xl text-3xl float-blob"
-          style={{ background: "linear-gradient(135deg, var(--violet), var(--pink))", boxShadow: "var(--glow)" }}
+          className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl text-2xl"
+          style={{ background: "var(--violet-soft)" }}
         >
           🔒
         </div>
@@ -246,13 +246,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             🔒 Lock
           </button>
         )}
-        <span
-          className="float-blob pointer-events-none absolute -left-10 -top-10 -z-10 h-40 w-40 rounded-full blur-2xl"
-          style={{ background: "radial-gradient(circle, rgba(139,123,247,0.5), transparent 70%)" }}
-        />
         <p className="island-kicker mb-2">PDF &amp; image → spreadsheet</p>
         <h1 className="demo-title mb-3">
-          Turn documents into <span className="gradient-text">spreadsheets</span>.
+          Turn documents into <span className="accent-text">spreadsheets</span>.
         </h1>
         <p className="demo-muted max-w-2xl text-base sm:text-lg">
           Drop a PDF or photo — the best OCR models pull out every table. Preview, then
@@ -288,8 +284,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           }}
           className="flex w-full flex-col items-center justify-center rounded-3xl border-2 border-dashed p-9 text-center transition"
           style={{
-            borderColor: dragging ? "var(--violet)" : "var(--line)",
-            background: dragging ? "color-mix(in oklab, var(--violet) 12%, transparent)" : "transparent",
+            borderColor: dragging ? "var(--violet)" : "var(--line-strong)",
+            background: dragging ? "var(--violet-soft)" : "var(--surface-sunken)",
           }}
         >
           <span className="mb-2 text-4xl" aria-hidden>
@@ -330,8 +326,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                   className="demo-card text-left transition"
                   style={{
                     borderColor: active ? "var(--violet)" : "var(--line)",
-                    boxShadow: active ? "0 0 0 3px color-mix(in oklab, var(--violet) 30%, transparent)" : undefined,
-                    transform: active ? "translateY(-2px)" : undefined,
+                    background: active ? "var(--violet-soft)" : undefined,
                   }}
                 >
                   <div className="flex items-center justify-between">
@@ -398,9 +393,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 className="demo-pill"
                 style={{
                   borderColor: i === activeSheet ? "var(--violet)" : "var(--chip-line)",
-                  color: i === activeSheet ? "var(--sea-ink)" : "var(--sea-ink-soft)",
-                  background:
-                    i === activeSheet ? "color-mix(in oklab, var(--violet) 18%, var(--chip-bg))" : undefined,
+                  color: i === activeSheet ? "var(--violet-deep)" : "var(--sea-ink-soft)",
+                  background: i === activeSheet ? "var(--violet-soft)" : "var(--chip-bg)",
                 }}
               >
                 {s.name || `Sheet ${i + 1}`} · {s.rows.length}

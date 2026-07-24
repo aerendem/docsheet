@@ -10,7 +10,7 @@ export default function Header() {
             to="/"
             className="inline-flex items-center gap-2 rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-3 py-1.5 text-sm text-[var(--sea-ink)] no-underline shadow-[0_8px_24px_rgba(30,90,72,0.08)] sm:px-4 sm:py-2"
           >
-            <span className="h-2.5 w-2.5 rounded-full bg-[linear-gradient(135deg,#8b7bf7,#ff8fb4)]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-[#7c6bf5]" />
             docsheet
           </Link>
         </h2>
