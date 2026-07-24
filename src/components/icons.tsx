@@ -87,6 +87,31 @@ export function IconAlert(props: IconProps) {
   )
 }
 
+export function IconCheck(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </Svg>
+  )
+}
+
+export function IconX(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m6 6 12 12M18 6 6 18" />
+    </Svg>
+  )
+}
+
+export function IconColumns(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <path d="M9.5 4.5v15M15 4.5v15" />
+    </Svg>
+  )
+}
+
 export function IconGitHub({ size = 20, className }: IconProps) {
   return (
     <svg

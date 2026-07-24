@@ -1,7 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { Workbook } from "exceljs"
+import {
+  decimalPlaces,
+  inferColumnKinds,
+  parseDateCell,
+  parseNumber,
+} from "../../lib/cell-value"
 import type { Sheet } from "../../lib/tiers"
 import { isAuthed } from "../../server/auth"
+
+const DATE_FORMAT = "dd.mm.yyyy"
+
+/** Match the format to how the document printed it: 340,50 keeps two places. */
+function numberFormatFor(sheet: Sheet, columnIndex: number): string {
+  let places = 0
+  for (const row of sheet.rows) {
+    const cell = row[columnIndex] ?? ""
+    if (cell.trim()) places = Math.max(places, decimalPlaces(cell))
+  }
+  return places > 0 ? `#,##0.${"0".repeat(Math.min(places, 6))}` : "#,##0"
+}
 
 function sanitizeFilename(name: string): string {
   const stem = (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "")
@@ -51,14 +69,38 @@ export const Route = createFileRoute("/api/xlsx")({
               cell.fill = {
                 type: "pattern",
                 pattern: "solid",
-                fgColor: { argb: "FFEFF3F0" },
+                fgColor: { argb: "FFF2F2F4" },
               }
             })
             ws.views = [{ state: "frozen", ySplit: 1 }]
           }
 
+          // Write figures and dates as real values, not text. Otherwise every
+          // cell arrives as a string and SUM over a price column returns 0.
+          const kinds = inferColumnKinds(sheet)
+          const formats = kinds.map((kind, ci) =>
+            kind === "number" ? numberFormatFor(sheet, ci) : DATE_FORMAT,
+          )
+
           for (const row of sheet.rows ?? []) {
-            ws.addRow(row)
+            const typed = row.map((val, ci) => {
+              const text = String(val ?? "")
+              if (!text.trim()) return null
+              if (kinds[ci] === "number") return parseNumber(text) ?? text
+              if (kinds[ci] === "date") return parseDateCell(text) ?? text
+              return text
+            })
+
+            const added = ws.addRow(typed)
+            added.eachCell((cell, colNumber) => {
+              const kind = kinds[colNumber - 1]
+              if (kind === "number" && typeof cell.value === "number") {
+                cell.numFmt = formats[colNumber - 1]
+              } else if (kind === "date" && cell.value instanceof Date) {
+                cell.numFmt = DATE_FORMAT
+              }
+            })
+
             row.forEach((val, idx) => {
               const len = String(val ?? "").length
               widths[idx] = Math.max(widths[idx] ?? 0, len)

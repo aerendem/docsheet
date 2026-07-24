@@ -2,12 +2,23 @@ import { createFileRoute } from "@tanstack/react-router"
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react"
 import {
   IconAlert,
+  IconCheck,
+  IconColumns,
   IconDownload,
   IconFile,
   IconLock,
   IconSparkle,
   IconUpload,
+  IconX,
 } from "../components/icons"
+import { inferColumnKinds } from "../lib/cell-value"
+import {
+  type CombinedColumn,
+  combine,
+  discoverColumns,
+  type ExtractedDoc,
+} from "../lib/combine"
+import { type Reconciliation, reconcile } from "../lib/reconcile"
 import {
   DEFAULT_PDF_ENGINE,
   DEFAULT_TIER,
@@ -24,6 +35,10 @@ export const Route = createFileRoute("/")({ component: Page })
 
 const PREVIEW_ROWS = 200
 const ACCEPT = ".pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,image/gif"
+/** Two at a time: fast enough to feel batched, gentle on rate limits. */
+const CONCURRENCY = 2
+const COLUMNS_KEY = "docsheet.combined.columns.v1"
+const COMBINED_VIEW = "__combined"
 
 const isPdfFile = (f: File) =>
   f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
@@ -50,21 +65,6 @@ function toCsv(sheet: Sheet): string {
   return "﻿" + lines.join("\r\n")
 }
 
-/**
- * Is this cell a figure? Tolerates currency and both decimal conventions
- * ("1.250,00" and "1,250.00") but rejects codes like "15202ST" so reference
- * columns stay left-aligned.
- */
-function isNumericCell(value: string): boolean {
-  const core = value
-    .trim()
-    .replace(/^[-+]?\s*/, "")
-    .replace(/^(?:[$€£₺¥]|TL|USD|EUR|GBP|TRY)\s*/i, "")
-    .replace(/\s*(?:[$€£₺¥]|TL|USD|EUR|GBP|TRY|%)$/i, "")
-    .trim()
-  return /^\d[\d.,'\s]*$/.test(core)
-}
-
 const stem = (name: string) =>
   (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "") || "export"
 
@@ -76,6 +76,9 @@ const engineLabel = (id?: string) =>
       : id === "native"
         ? "native"
         : id
+
+const money = (n: number) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 // ── Route shell: session → gate or app ────────────────────────────────────
 function Page() {
@@ -177,37 +180,100 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
   )
 }
 
+// ── Batch queue ───────────────────────────────────────────────────────────
+type DocStatus = "queued" | "running" | "done" | "error"
+
+interface DocState {
+  id: string
+  file: File
+  status: DocStatus
+  result?: ExtractResult
+  error?: string
+}
+
+type ColumnPrefs = Record<string, { label: string; include: boolean }>
+
+function loadColumnPrefs(): ColumnPrefs {
+  try {
+    const raw = localStorage.getItem(COLUMNS_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === "object" ? (parsed as ColumnPrefs) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Run tasks with a small pool so a stack of invoices doesn't fire at once. */
+async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+  let cursor = 0
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      await worker(items[index])
+    }
+  })
+  await Promise.all(lanes)
+}
+
 // ── Main app ──────────────────────────────────────────────────────────────
 function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void }) {
-  const [file, setFile] = useState<File | null>(null)
+  const [docs, setDocs] = useState<DocState[]>([])
   const [dragging, setDragging] = useState(false)
   const [tier, setTier] = useState<QualityTier>(DEFAULT_TIER)
   const [customModel, setCustomModel] = useState("")
   const [pdfEngine, setPdfEngine] = useState(DEFAULT_PDF_ENGINE)
-  const [loading, setLoading] = useState(false)
+  const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
-  const [result, setResult] = useState<ExtractResult | null>(null)
+  const [view, setView] = useState<string>(COMBINED_VIEW)
   const [activeSheet, setActiveSheet] = useState(0)
   const [busyFmt, setBusyFmt] = useState<string | null>(null)
+  const [columnPrefs, setColumnPrefs] = useState<ColumnPrefs>({})
+  const [editingColumns, setEditingColumns] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const pickFile = (f: File | null | undefined) => {
-    if (!f) return
-    setFile(f)
-    setResult(null)
-    setError(null)
-    setStatus(null)
+  // localStorage only exists in the browser; reading it in render would break SSR.
+  useEffect(() => {
+    setColumnPrefs(loadColumnPrefs())
+  }, [])
+
+  const savePrefs = (next: ColumnPrefs) => {
+    setColumnPrefs(next)
+    try {
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify(next))
+    } catch {
+      /* private mode — the session still works, it just won't be remembered */
+    }
   }
 
-  const onExtract = async () => {
-    if (!file) return
-    setLoading(true)
+  const addFiles = (list: FileList | null | undefined) => {
+    const incoming = Array.from(list ?? [])
+    if (!incoming.length) return
     setError(null)
-    setStatus("Reading your document…")
+    setDocs((prev) => [
+      ...prev,
+      ...incoming.map((file, i) => ({
+        id: `${Date.now()}-${i}-${file.name}`,
+        file,
+        status: "queued" as DocStatus,
+      })),
+    ])
+  }
+
+  const removeDoc = (id: string) => setDocs((prev) => prev.filter((d) => d.id !== id))
+  const clearAll = () => {
+    setDocs([])
+    setError(null)
+    setView(COMBINED_VIEW)
+  }
+
+  const patch = (id: string, next: Partial<DocState>) =>
+    setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, ...next } : d)))
+
+  const extractOne = async (doc: DocState) => {
+    patch(doc.id, { status: "running", error: undefined })
     try {
       const fd = new FormData()
-      fd.append("file", file)
+      fd.append("file", doc.file)
       fd.append("tier", tier)
       if (customModel.trim()) fd.append("model", customModel.trim())
       fd.append("pdfEngine", pdfEngine)
@@ -215,39 +281,110 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       const res = await fetch("/api/extract", { method: "POST", body: fd })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
-
-      const r = data as ExtractResult
-      setResult(r)
-      setActiveSheet(0)
-      const n = r.sheets.length
-      const via = r.isPdf && r.engineUsed ? ` · ${engineLabel(r.engineUsed)}` : ""
-      const spend = typeof r.cost === "number" ? ` · ${formatCost(r.cost)}` : ""
-      setStatus(`${n} table${n === 1 ? "" : "s"} · ${r.model}${via}${spend}`)
+      patch(doc.id, { status: "done", result: data as ExtractResult })
     } catch (e) {
-      setError((e as Error).message)
-      setStatus(null)
-    } finally {
-      setLoading(false)
+      patch(doc.id, { status: "error", error: (e as Error).message })
     }
   }
 
+  const onExtract = async () => {
+    const pending = docs.filter((d) => d.status === "queued" || d.status === "error")
+    if (!pending.length) return
+    setRunning(true)
+    setError(null)
+    try {
+      await runPool(pending, CONCURRENCY, extractOne)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const done = docs.filter((d) => d.result)
+  const extracted: ExtractedDoc[] = useMemo(
+    () =>
+      docs
+        .filter((d) => d.result)
+        .map((d) => ({ filename: d.file.name, sheets: d.result?.sheets ?? [] })),
+    [docs],
+  )
+
+  const discovered = useMemo(() => discoverColumns(extracted), [extracted])
+  const columns: CombinedColumn[] = useMemo(
+    () =>
+      discovered.map((c) => ({
+        ...c,
+        label: columnPrefs[c.key]?.label ?? c.label,
+        include: columnPrefs[c.key]?.include ?? true,
+      })),
+    [discovered, columnPrefs],
+  )
+  const combinedSheet = useMemo(() => combine(extracted, columns), [extracted, columns])
+
+  const reconciliations = useMemo(() => {
+    const map = new Map<string, Reconciliation | null>()
+    for (const d of docs) {
+      if (d.result) map.set(d.id, reconcile(d.result.sheets))
+    }
+    return map
+  }, [docs])
+
+  const showCombined = done.length > 1
+  const effectiveView = showCombined ? view : (done[0]?.id ?? COMBINED_VIEW)
+  const currentDoc = done.find((d) => d.id === effectiveView)
+  const currentSheets: Sheet[] = currentDoc
+    ? (currentDoc.result?.sheets ?? [])
+    : showCombined
+      ? [combinedSheet]
+      : []
+
+  // Sheet index is per view; keep it in range when the view changes.
+  useEffect(() => {
+    setActiveSheet(0)
+  }, [effectiveView])
+
+  const sheet = currentSheets[Math.min(activeSheet, currentSheets.length - 1)]
+  const currentRecon = currentDoc ? reconciliations.get(currentDoc.id) : null
+
+  const numericColumns = useMemo(
+    () => (sheet ? inferColumnKinds(sheet, PREVIEW_ROWS).map((k) => k === "number") : []),
+    [sheet],
+  )
+
+  const totalCost = done.reduce(
+    (sum, d) => sum + (typeof d.result?.cost === "number" ? d.result.cost : 0),
+    0,
+  )
+  const totalRows = done.reduce(
+    (sum, d) => sum + (d.result?.sheets ?? []).reduce((n, s) => n + s.rows.length, 0),
+    0,
+  )
+  const queued = docs.filter((d) => d.status === "queued" || d.status === "error").length
+  const showPdfEngine = docs.some((d) => isPdfFile(d.file))
+
   const onDownload = async (fmt: "xlsx" | "csv" | "json") => {
-    if (!result) return
+    if (!currentSheets.length) return
     setBusyFmt(fmt)
     setError(null)
     try {
-      const base = stem(result.filename)
+      const base = currentDoc ? stem(currentDoc.file.name) : "combined"
       if (fmt === "csv") {
-        const sheet = result.sheets[activeSheet] ?? result.sheets[0]
-        downloadBlob(new Blob([toCsv(sheet)], { type: "text/csv;charset=utf-8" }), `${base}.csv`)
+        if (!sheet) return
+        downloadBlob(
+          new Blob([toCsv(sheet)], { type: "text/csv;charset=utf-8" }),
+          `${base}${currentSheets.length > 1 ? `-${stem(sheet.name)}` : ""}.csv`,
+        )
       } else if (fmt === "json") {
-        const json = JSON.stringify({ sheets: result.sheets }, null, 2)
-        downloadBlob(new Blob([json], { type: "application/json" }), `${base}.json`)
+        downloadBlob(
+          new Blob([JSON.stringify({ sheets: currentSheets }, null, 2)], {
+            type: "application/json",
+          }),
+          `${base}.json`,
+        )
       } else {
         const res = await fetch("/api/xlsx", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sheets: result.sheets, filename: result.filename }),
+          body: JSON.stringify({ sheets: currentSheets, filename: base }),
         })
         if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`)
         downloadBlob(await res.blob(), `${base}.xlsx`)
@@ -258,26 +395,6 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       setBusyFmt(null)
     }
   }
-
-  const sheet = result?.sheets[activeSheet]
-  const showPdfEngine = file ? isPdfFile(file) : false
-
-  // A column is a figure column only when every filled cell in it is a figure.
-  const numericColumns = useMemo(() => {
-    if (!sheet) return []
-    const rows = sheet.rows.slice(0, PREVIEW_ROWS)
-    const width = Math.max(sheet.columns.length, ...rows.map((r) => r.length), 0)
-    return Array.from({ length: width }, (_, ci) => {
-      let filled = 0
-      for (const row of rows) {
-        const cell = row[ci] ?? ""
-        if (!cell.trim()) continue
-        if (!isNumericCell(cell)) return false
-        filled++
-      }
-      return filled > 0
-    })
-  }, [sheet])
 
   return (
     <main className="demo-page">
@@ -302,8 +419,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           Turn documents into spreadsheets<span className="accent-text">.</span>
         </h1>
         <p className="demo-muted max-w-2xl text-base sm:text-lg">
-          Drop a PDF or photo — the best OCR models pull out every table. Preview, then
-          download as <strong>Excel</strong>, <strong>CSV</strong>, or JSON.
+          Drop a stack of PDFs or photos — the best OCR models pull out every table, check
+          the totals add up, and stack them into one sheet you can download as{" "}
+          <strong>Excel</strong>, <strong>CSV</strong>, or JSON.
         </p>
       </header>
 
@@ -340,7 +458,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           onDrop={(e) => {
             e.preventDefault()
             setDragging(false)
-            pickFile(e.dataTransfer.files?.[0])
+            addFiles(e.dataTransfer.files)
           }}
           className="flex w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center transition"
           style={{
@@ -356,30 +474,81 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               color: dragging ? "var(--accent)" : "var(--ink-soft)",
             }}
           >
-            {file ? <IconFile size={20} /> : <IconUpload size={20} />}
+            {docs.length ? <IconFile size={20} /> : <IconUpload size={20} />}
           </span>
-          {file ? (
-            <span className="demo-pill">
-              {file.name} · {(file.size / 1024).toFixed(0)} KB
+          <span className="flex flex-col gap-1">
+            <span className="font-bold" style={{ color: "var(--ink)" }}>
+              {docs.length
+                ? "Add more documents"
+                : "Drop PDFs or images, or click to browse"}
             </span>
-          ) : (
-            <span className="flex flex-col gap-1">
-              <span className="font-bold" style={{ color: "var(--ink)" }}>
-                Drop a PDF or image, or click to browse
-              </span>
-              <span className="demo-muted text-sm">
-                PDF · PNG · JPG · WEBP · TIFF · max 25 MB
-              </span>
+            <span className="demo-muted text-sm">
+              PDF · PNG · JPG · WEBP · TIFF · max 25 MB each
             </span>
-          )}
+          </span>
         </button>
         <input
           ref={inputRef}
           type="file"
+          multiple
           accept={ACCEPT}
           className="hidden"
-          onChange={(e) => pickFile(e.target.files?.[0])}
+          onChange={(e) => {
+            addFiles(e.target.files)
+            e.target.value = ""
+          }}
         />
+
+        {/* queue */}
+        {docs.length > 0 && (
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="demo-section-title">
+                {docs.length} document{docs.length === 1 ? "" : "s"}
+              </p>
+              <button
+                type="button"
+                onClick={clearAll}
+                className="text-xs font-semibold"
+                style={{ color: "var(--ink-faint)" }}
+              >
+                Clear all
+              </button>
+            </div>
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+              {docs.map((d) => (
+                <li
+                  key={d.id}
+                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+                  style={{ background: "var(--surface-sunken)" }}
+                >
+                  <StatusMark status={d.status} />
+                  <span className="min-w-0 flex-1 truncate font-semibold">{d.file.name}</span>
+                  {d.status === "done" && (
+                    <ReconMark reconciliation={reconciliations.get(d.id) ?? null} />
+                  )}
+                  {d.error && (
+                    <span className="truncate text-xs" style={{ color: "var(--danger)" }}>
+                      {d.error}
+                    </span>
+                  )}
+                  <span className="demo-muted flex-shrink-0 text-xs tabular-nums">
+                    {(d.file.size / 1024).toFixed(0)} KB
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeDoc(d.id)}
+                    aria-label={`Remove ${d.file.name}`}
+                    className="flex-shrink-0 rounded p-1"
+                    style={{ color: "var(--ink-faint)" }}
+                  >
+                    <IconX size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* quality */}
         <div className="mt-6">
@@ -424,7 +593,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
         {/* advanced */}
         <details className="mt-4">
-          <summary className="demo-muted cursor-pointer text-sm font-bold select-none">Advanced options</summary>
+          <summary className="demo-muted cursor-pointer text-sm font-bold select-none">
+            Advanced options
+          </summary>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">
@@ -439,8 +610,14 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             </label>
             {showPdfEngine && (
               <label className="block">
-                <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">PDF engine</span>
-                <select className="demo-select" value={pdfEngine} onChange={(e) => setPdfEngine(e.target.value)}>
+                <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">
+                  PDF engine
+                </span>
+                <select
+                  className="demo-select"
+                  value={pdfEngine}
+                  onChange={(e) => setPdfEngine(e.target.value)}
+                >
                   {PDF_ENGINES.map((eng) => (
                     <option key={eng.id} value={eng.id}>
                       {eng.label}
@@ -453,30 +630,165 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         </details>
 
         <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-3">
-          <button type="button" className="demo-button" disabled={!file || loading} onClick={onExtract}>
+          <button
+            type="button"
+            className="demo-button"
+            disabled={!queued || running}
+            onClick={onExtract}
+          >
             <IconSparkle size={16} />
-            {loading ? "Extracting…" : "Extract tables"}
+            {running
+              ? "Extracting…"
+              : queued > 1
+                ? `Extract ${queued} documents`
+                : "Extract tables"}
           </button>
-          {status && <span className="demo-muted text-sm font-semibold">{status}</span>}
+          {done.length > 0 && (
+            <span className="demo-muted text-sm font-semibold">
+              {done.length} done · {totalRows} rows
+              {totalCost > 0 ? ` · ${formatCost(totalCost)}` : ""}
+              {done.length === 1 && done[0].result?.engineUsed
+                ? ` · ${engineLabel(done[0].result.engineUsed)}`
+                : ""}
+            </span>
+          )}
         </div>
       </section>
 
       {/* results */}
-      {result && sheet && (
+      {done.length > 0 && sheet && (
         <section className="demo-panel rise-in mt-6">
-          <div className="mb-4 flex flex-wrap gap-2">
-            {result.sheets.map((s, i) => (
+          {showCombined && (
+            <div className="mb-4 flex flex-wrap gap-2">
               <button
-                key={`${s.name}-${i}`}
                 type="button"
-                onClick={() => setActiveSheet(i)}
-                aria-pressed={i === activeSheet}
-                className={`demo-pill${i === activeSheet ? " demo-pill-active" : ""}`}
+                onClick={() => setView(COMBINED_VIEW)}
+                aria-pressed={effectiveView === COMBINED_VIEW}
+                className={`demo-pill${effectiveView === COMBINED_VIEW ? " demo-pill-active" : ""}`}
               >
-                {s.name || `Sheet ${i + 1}`} · {s.rows.length}
+                Combined · {combinedSheet.rows.length}
               </button>
-            ))}
-          </div>
+              {done.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setView(d.id)}
+                  aria-pressed={effectiveView === d.id}
+                  className={`demo-pill${effectiveView === d.id ? " demo-pill-active" : ""}`}
+                >
+                  {d.file.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {currentRecon && (
+            <div
+              className="demo-alert mb-4"
+              style={
+                currentRecon.ok
+                  ? { borderLeftColor: "var(--accent)" }
+                  : { borderColor: "var(--danger-line)", borderLeftColor: "var(--danger)" }
+              }
+            >
+              {currentRecon.ok ? (
+                <IconCheck size={17} className="mt-px flex-shrink-0" style={{ color: "var(--accent)" }} />
+              ) : (
+                <IconAlert size={17} className="mt-px flex-shrink-0" style={{ color: "var(--danger)" }} />
+              )}
+              <span>
+                {currentRecon.ok ? (
+                  <>
+                    <strong>Totals reconcile.</strong> “{currentRecon.columnName}” adds up to{" "}
+                    {money(currentRecon.sum)}, matching “{currentRecon.statedLabel}” on the
+                    document.
+                  </>
+                ) : (
+                  <>
+                    <strong>Totals don’t match.</strong> “{currentRecon.columnName}” adds up to{" "}
+                    {money(currentRecon.sum)} but the document states {money(currentRecon.stated)}{" "}
+                    for “{currentRecon.statedLabel}” — off by {money(Math.abs(currentRecon.delta))}.
+                    Worth checking before you use this one.
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+
+          {/* One sheet needs no tabs — in the combined view that would just
+              repeat the "Combined" pill from the view switcher above. */}
+          {(currentSheets.length > 1 || effectiveView === COMBINED_VIEW) && (
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              {currentSheets.length > 1 &&
+                currentSheets.map((s, i) => (
+                  <button
+                    key={`${s.name}-${i}`}
+                    type="button"
+                    onClick={() => setActiveSheet(i)}
+                    aria-pressed={i === activeSheet}
+                    className={`demo-pill${i === activeSheet ? " demo-pill-active" : ""}`}
+                  >
+                    {s.name || `Sheet ${i + 1}`} · {s.rows.length}
+                  </button>
+                ))}
+              {effectiveView === COMBINED_VIEW && (
+                <button
+                  type="button"
+                  onClick={() => setEditingColumns((v) => !v)}
+                  className="demo-pill ml-auto"
+                  aria-expanded={editingColumns}
+                >
+                  <IconColumns size={13} />
+                  Columns
+                </button>
+              )}
+            </div>
+          )}
+
+          {editingColumns && effectiveView === COMBINED_VIEW && (
+            <div className="demo-card mb-4">
+              <p className="demo-section-title mb-1">Combined columns</p>
+              <p className="demo-muted mb-3 text-xs">
+                Rename or switch off columns — the choice is remembered for next time, so a
+                supplier’s layout only has to be set up once.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {columns.map((c) => (
+                  <div key={c.key} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={c.include}
+                      aria-label={`Include ${c.label}`}
+                      onChange={(e) =>
+                        savePrefs({
+                          ...columnPrefs,
+                          [c.key]: { label: c.label, include: e.target.checked },
+                        })
+                      }
+                    />
+                    <input
+                      className="demo-input !py-1.5 text-sm"
+                      value={c.label}
+                      aria-label={`Rename ${c.label}`}
+                      onChange={(e) =>
+                        savePrefs({
+                          ...columnPrefs,
+                          [c.key]: { label: e.target.value, include: c.include },
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="demo-button demo-button-secondary mt-3 !px-3.5 !py-1.5 text-xs"
+                onClick={() => savePrefs({})}
+              >
+                Reset to detected
+              </button>
+            </div>
+          )}
 
           <div className="demo-table-shell" style={{ maxHeight: 460 }}>
             <table className="demo-table">
@@ -506,10 +818,16 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             {sheet.rows.length > PREVIEW_ROWS
               ? `Showing first ${PREVIEW_ROWS} of ${sheet.rows.length} rows — the download has them all.`
               : `${sheet.rows.length} row${sheet.rows.length === 1 ? "" : "s"}.`}
+            {currentSheets.length > 1 && " CSV saves this sheet only; Excel saves all of them."}
           </p>
 
           <div className="mt-5 flex flex-wrap gap-2.5">
-            <button type="button" className="demo-button" disabled={busyFmt !== null} onClick={() => onDownload("xlsx")}>
+            <button
+              type="button"
+              className="demo-button"
+              disabled={busyFmt !== null}
+              onClick={() => onDownload("xlsx")}
+            >
               <IconDownload size={16} />
               {busyFmt === "xlsx" ? "Preparing…" : "Excel"}
             </button>
@@ -535,5 +853,40 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         </section>
       )}
     </main>
+  )
+}
+
+function StatusMark({ status }: { status: DocStatus }) {
+  if (status === "done") {
+    return <IconCheck size={15} style={{ color: "var(--accent)" }} className="flex-shrink-0" />
+  }
+  if (status === "error") {
+    return <IconAlert size={15} style={{ color: "var(--danger)" }} className="flex-shrink-0" />
+  }
+  return (
+    <span
+      className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+      style={{
+        background: status === "running" ? "var(--accent)" : "var(--ink-faint)",
+        opacity: status === "running" ? 1 : 0.5,
+      }}
+    />
+  )
+}
+
+function ReconMark({ reconciliation }: { reconciliation: Reconciliation | null }) {
+  if (!reconciliation) return null
+  return (
+    <span
+      className="flex-shrink-0 text-xs font-semibold"
+      style={{ color: reconciliation.ok ? "var(--ink-faint)" : "var(--danger)" }}
+      title={
+        reconciliation.ok
+          ? `${reconciliation.columnName} sums to ${money(reconciliation.sum)}, matching ${reconciliation.statedLabel}`
+          : `${reconciliation.columnName} sums to ${money(reconciliation.sum)} but the document states ${money(reconciliation.stated)}`
+      }
+    >
+      {reconciliation.ok ? "totals ✓" : "totals ✕"}
+    </span>
   )
 }
