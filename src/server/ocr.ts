@@ -2,7 +2,7 @@
 // into clean spreadsheet "sheets". Never import this from client code — it reads
 // process.env and uses Buffer.
 
-import { modelForTier, type Sheet } from "../lib/tiers"
+import { DEFAULT_PDF_ENGINE, modelForTier, type Sheet } from "../lib/tiers"
 import { bytesToBase64, env } from "./node"
 
 const OPENROUTER_BASE_URL = (
@@ -19,6 +19,9 @@ const SYSTEM_PROMPT =
   "Rules: create one sheet per distinct table and give each a meaningful name. " +
   "Every row must have the same number of cells as `columns`; use empty strings for blanks. " +
   "Preserve original text and numbers exactly as printed — do not round, reformat, or localize. " +
+  'For two-column key/value blocks (label → value pairs such as invoice headers or totals), ALWAYS ' +
+  'use the exact header columns ["Field", "Value"] and put every label/value pair as its own data row — ' +
+  "never promote an actual label/value pair into the header row. " +
   'If the document contains no tables, return one sheet named "Text" with a single column ' +
   '"content" and one row per line of extracted text.'
 
@@ -56,43 +59,49 @@ export interface OcrResult {
   model: string
   isPdf: boolean
   usage?: Record<string, unknown>
+  engineUsed?: string
 }
 
-export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResult> {
-  const apiKey = (env.OPENROUTER_API_KEY ?? "").trim()
-  if (!apiKey) {
-    throw new OcrError(500, "OPENROUTER_API_KEY is not configured on the server.")
-  }
-
-  const model = modelForTier(opts.tier, opts.modelOverride)
-  const isPdf =
-    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
-  const base64 = bytesToBase64(file.bytes)
-
+function buildContent(
+  file: OcrInput,
+  isPdf: boolean,
+  base64: string,
+): Array<Record<string, unknown>> {
   const content: Array<Record<string, unknown>> = [{ type: "text", text: USER_PROMPT }]
-  const payload: Record<string, unknown> = {
-    model,
-    temperature: 0,
-    response_format: { type: "json_object" },
-  }
-
   if (isPdf) {
     content.push({
       type: "file",
       file: { filename: file.name, file_data: `data:application/pdf;base64,${base64}` },
     })
-    payload.plugins = [
-      { id: "file-parser", pdf: { engine: opts.pdfEngine || "mistral-ocr" } },
-    ]
   } else {
     const mime = file.type.startsWith("image/") ? file.type : "image/png"
     content.push({ type: "image_url", image_url: { url: `data:${mime};base64,${base64}` } })
   }
+  return content
+}
 
-  payload.messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content },
-  ]
+function hasContent(sheets: Sheet[]): boolean {
+  return sheets.some((s) => s.rows.length > 0)
+}
+
+async function callModel(
+  apiKey: string,
+  model: string,
+  content: Array<Record<string, unknown>>,
+  pdfEngine: string | undefined,
+): Promise<{ sheets: Sheet[]; usage?: Record<string, unknown> }> {
+  const payload: Record<string, unknown> = {
+    model,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content },
+    ],
+  }
+  if (pdfEngine) {
+    payload.plugins = [{ id: "file-parser", pdf: { engine: pdfEngine } }]
+  }
 
   const body = await callOpenRouter(apiKey, payload)
 
@@ -107,8 +116,42 @@ export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResul
   if (typeof text !== "string") {
     throw new OcrError(502, "Unexpected response shape from the model.")
   }
+  return { sheets: normalizeSheets(text), usage: body?.usage }
+}
 
-  return { sheets: normalizeSheets(text), model, isPdf, usage: body?.usage }
+export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResult> {
+  const apiKey = (env.OPENROUTER_API_KEY ?? "").trim()
+  if (!apiKey) {
+    throw new OcrError(500, "OPENROUTER_API_KEY is not configured on the server.")
+  }
+
+  const model = modelForTier(opts.tier, opts.modelOverride)
+  const isPdf =
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+
+  // Images go straight to the vision model.
+  if (!isPdf) {
+    const content = buildContent(file, false, bytesToBase64(file.bytes))
+    const r = await callModel(apiKey, model, content, undefined)
+    return { sheets: r.sheets, model, isPdf: false, usage: r.usage }
+  }
+
+  // PDFs use OpenRouter's file-parser. "auto" tries the free text layer first,
+  // then falls back to Mistral OCR for scanned/photographed pages.
+  const content = buildContent(file, true, bytesToBase64(file.bytes))
+  const requested = (opts.pdfEngine || DEFAULT_PDF_ENGINE).trim()
+
+  if (requested === "auto") {
+    const viaText = await callModel(apiKey, model, content, "pdf-text")
+    if (hasContent(viaText.sheets)) {
+      return { sheets: viaText.sheets, model, isPdf: true, usage: viaText.usage, engineUsed: "pdf-text" }
+    }
+    const viaOcr = await callModel(apiKey, model, content, "mistral-ocr")
+    return { sheets: viaOcr.sheets, model, isPdf: true, usage: viaOcr.usage, engineUsed: "mistral-ocr" }
+  }
+
+  const r = await callModel(apiKey, model, content, requested)
+  return { sheets: r.sheets, model, isPdf: true, usage: r.usage, engineUsed: requested }
 }
 
 async function callOpenRouter(

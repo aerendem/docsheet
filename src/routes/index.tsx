@@ -1,23 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useEffect, useRef, useState } from "react"
+import { type FormEvent, useEffect, useRef, useState } from "react"
 import {
   DEFAULT_PDF_ENGINE,
   DEFAULT_TIER,
-  PDF_ENGINES,
   type ExtractResult,
+  PDF_ENGINES,
   type QualityTier,
+  type SessionInfo,
   type Sheet,
   TIERS,
 } from "../lib/tiers"
 
-export const Route = createFileRoute("/")({ component: App })
+export const Route = createFileRoute("/")({ component: Page })
 
 const PREVIEW_ROWS = 200
 const ACCEPT = ".pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,image/gif"
 
-function isPdfFile(file: File): boolean {
-  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
-}
+const isPdfFile = (f: File) =>
+  f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -38,14 +38,119 @@ function toCsv(sheet: Sheet): string {
   const lines: string[] = []
   if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(","))
   for (const row of sheet.rows) lines.push(row.map(esc).join(","))
-  return "﻿" + lines.join("\r\n") // BOM so Excel reads UTF-8
+  return "﻿" + lines.join("\r\n")
 }
 
-function stem(name: string): string {
-  return (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "") || "export"
+const stem = (name: string) =>
+  (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "") || "export"
+
+const engineLabel = (id?: string) =>
+  id === "pdf-text"
+    ? "text layer · free"
+    : id === "mistral-ocr"
+      ? "Mistral OCR"
+      : id === "native"
+        ? "native"
+        : id
+
+// ── Route shell: session → gate or app ────────────────────────────────────
+function Page() {
+  const [session, setSession] = useState<SessionInfo | null>(null)
+
+  const refresh = () =>
+    fetch("/api/session")
+      .then((r) => r.json())
+      .then((d: SessionInfo) => setSession(d))
+      .catch(() => setSession({ authRequired: false, authed: true, keyConfigured: false }))
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  if (!session) {
+    return (
+      <main className="demo-page demo-center">
+        <div className="demo-muted text-sm">Loading…</div>
+      </main>
+    )
+  }
+  if (session.authRequired && !session.authed) {
+    return <PasswordGate onUnlocked={refresh} />
+  }
+  return (
+    <App
+      session={session}
+      onLogout={async () => {
+        await fetch("/api/logout", { method: "POST" })
+        refresh()
+      }}
+    />
+  )
 }
 
-function App() {
+// ── Password gate ─────────────────────────────────────────────────────────
+function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
+  const [pw, setPw] = useState("")
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d.error ?? "Wrong password.")
+      }
+      onUnlocked()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="demo-page demo-center">
+      <form onSubmit={submit} className="demo-panel rise-in w-full max-w-sm text-center">
+        <div
+          className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-3xl text-3xl float-blob"
+          style={{ background: "linear-gradient(135deg, var(--violet), var(--pink))", boxShadow: "var(--glow)" }}
+        >
+          🔒
+        </div>
+        <p className="island-kicker mb-1">docsheet</p>
+        <h1 className="display-title mb-2 text-2xl font-extrabold">Private workspace</h1>
+        <p className="demo-muted mb-5 text-sm">Enter the password to continue.</p>
+        <input
+          autoFocus
+          type="password"
+          className="demo-input mb-3 text-center tracking-widest"
+          placeholder="••••••••••"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+        {err && (
+          <p className="mb-3 text-sm font-semibold" style={{ color: "var(--pink)" }}>
+            ⚠ {err}
+          </p>
+        )}
+        <button type="submit" className="demo-button w-full" disabled={busy || !pw}>
+          {busy ? "Unlocking…" : "Unlock"}
+        </button>
+      </form>
+    </main>
+  )
+}
+
+// ── Main app ──────────────────────────────────────────────────────────────
+function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void }) {
   const [file, setFile] = useState<File | null>(null)
   const [dragging, setDragging] = useState(false)
   const [tier, setTier] = useState<QualityTier>(DEFAULT_TIER)
@@ -57,15 +162,7 @@ function App() {
   const [result, setResult] = useState<ExtractResult | null>(null)
   const [activeSheet, setActiveSheet] = useState(0)
   const [busyFmt, setBusyFmt] = useState<string | null>(null)
-  const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((d) => setKeyConfigured(Boolean(d.keyConfigured)))
-      .catch(() => setKeyConfigured(null))
-  }, [])
 
   const pickFile = (f: File | null | undefined) => {
     if (!f) return
@@ -79,7 +176,7 @@ function App() {
     if (!file) return
     setLoading(true)
     setError(null)
-    setStatus("Running OCR… this usually takes 10–60s.")
+    setStatus("Reading your document…")
     try {
       const fd = new FormData()
       fd.append("file", file)
@@ -91,10 +188,12 @@ function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
 
-      setResult(data as ExtractResult)
+      const r = data as ExtractResult
+      setResult(r)
       setActiveSheet(0)
-      const n = (data as ExtractResult).sheets.length
-      setStatus(`Done — ${n} table${n === 1 ? "" : "s"} via ${(data as ExtractResult).model}.`)
+      const n = r.sheets.length
+      const via = r.isPdf && r.engineUsed ? ` · ${engineLabel(r.engineUsed)}` : ""
+      setStatus(`✨ ${n} table${n === 1 ? "" : "s"} · ${r.model}${via}`)
     } catch (e) {
       setError((e as Error).message)
       setStatus(null)
@@ -136,25 +235,40 @@ function App() {
 
   return (
     <main className="demo-page demo-page-wide">
-      <header className="mb-8">
+      {/* hero */}
+      <header className="relative mb-8 overflow-visible">
+        {session.authRequired && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="demo-button demo-button-secondary absolute right-0 top-0 !px-4 !py-2 text-xs"
+          >
+            🔒 Lock
+          </button>
+        )}
+        <span
+          className="float-blob pointer-events-none absolute -left-10 -top-10 -z-10 h-40 w-40 rounded-full blur-2xl"
+          style={{ background: "radial-gradient(circle, rgba(139,123,247,0.5), transparent 70%)" }}
+        />
         <p className="island-kicker mb-2">PDF &amp; image → spreadsheet</p>
-        <h1 className="demo-title mb-3">Turn any document into Excel or CSV.</h1>
-        <p className="demo-muted max-w-2xl text-base">
-          Drop a PDF or photo and the best OCR models (via OpenRouter) pull out every table.
-          Preview it, then download as <strong>.xlsx</strong>, <strong>.csv</strong>, or JSON.
+        <h1 className="demo-title mb-3">
+          Turn documents into <span className="gradient-text">spreadsheets</span>.
+        </h1>
+        <p className="demo-muted max-w-2xl text-base sm:text-lg">
+          Drop a PDF or photo — the best OCR models pull out every table. Preview, then
+          download as <strong>Excel</strong>, <strong>CSV</strong>, or JSON.
         </p>
       </header>
 
-      {keyConfigured === false && (
+      {session.keyConfigured === false && (
         <div className="demo-alert mb-6">
-          <strong>OPENROUTER_API_KEY is not set on the server.</strong> Extraction will fail until
-          you add it (locally in <code>.env</code>, or as a Railway variable), then restart.
+          <strong>No OpenRouter key set.</strong> Extraction needs <code>OPENROUTER_API_KEY</code> on the server.
         </div>
       )}
       {error && <div className="demo-alert demo-alert-danger mb-6">⚠️ {error}</div>}
 
-      <section className="demo-panel">
-        {/* Dropzone */}
+      <section className="demo-panel rise-in">
+        {/* dropzone */}
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
@@ -172,25 +286,25 @@ function App() {
             setDragging(false)
             pickFile(e.dataTransfer.files?.[0])
           }}
-          className="flex w-full flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center transition"
+          className="flex w-full flex-col items-center justify-center rounded-3xl border-2 border-dashed p-9 text-center transition"
           style={{
-            borderColor: dragging ? "var(--lagoon-deep)" : "var(--line)",
-            background: dragging ? "color-mix(in oklab, var(--lagoon) 12%, transparent)" : "transparent",
+            borderColor: dragging ? "var(--violet)" : "var(--line)",
+            background: dragging ? "color-mix(in oklab, var(--violet) 12%, transparent)" : "transparent",
           }}
         >
-          <span className="mb-2 text-3xl" aria-hidden>
-            ⬆︎
+          <span className="mb-2 text-4xl" aria-hidden>
+            {file ? "📄" : "🪄"}
           </span>
           {file ? (
             <span className="demo-pill">
-              📄 {file.name} · {(file.size / 1024).toFixed(0)} KB
+              {file.name} · {(file.size / 1024).toFixed(0)} KB
             </span>
           ) : (
             <>
-              <span className="font-semibold" style={{ color: "var(--sea-ink)" }}>
-                Drop a PDF or image here, or click to browse
+              <span className="font-bold" style={{ color: "var(--sea-ink)" }}>
+                Drop a PDF or image, or click to browse
               </span>
-              <span className="demo-muted mt-1 text-sm">PDF, PNG, JPG, WEBP, TIFF, BMP · max 25 MB</span>
+              <span className="demo-muted mt-1 text-sm">PDF · PNG · JPG · WEBP · TIFF · max 25 MB</span>
             </>
           )}
         </button>
@@ -202,7 +316,7 @@ function App() {
           onChange={(e) => pickFile(e.target.files?.[0])}
         />
 
-        {/* Quality selector */}
+        {/* quality */}
         <div className="mt-6">
           <p className="demo-section-title mb-2">Quality</p>
           <div className="grid gap-3 sm:grid-cols-3">
@@ -215,17 +329,16 @@ function App() {
                   onClick={() => setTier(t.id)}
                   className="demo-card text-left transition"
                   style={{
-                    borderColor: active ? "var(--lagoon-deep)" : "var(--line)",
-                    boxShadow: active
-                      ? "0 0 0 2px color-mix(in oklab, var(--lagoon) 40%, transparent)"
-                      : undefined,
+                    borderColor: active ? "var(--violet)" : "var(--line)",
+                    boxShadow: active ? "0 0 0 3px color-mix(in oklab, var(--violet) 30%, transparent)" : undefined,
+                    transform: active ? "translateY(-2px)" : undefined,
                   }}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold" style={{ color: "var(--sea-ink)" }}>
+                    <span className="font-extrabold" style={{ color: "var(--sea-ink)" }}>
                       {t.label}
                     </span>
-                    {t.id === DEFAULT_TIER && <span className="demo-pill">recommended</span>}
+                    {t.id === DEFAULT_TIER && <span className="demo-pill">pick</span>}
                   </div>
                   <p className="demo-muted mt-1 text-sm">{t.blurb}</p>
                   <p className="demo-muted mt-2 text-xs opacity-80">{t.priceHint}</p>
@@ -235,15 +348,13 @@ function App() {
           </div>
         </div>
 
-        {/* Advanced */}
+        {/* advanced */}
         <details className="mt-4">
-          <summary className="demo-muted cursor-pointer text-sm font-semibold select-none">
-            Advanced options
-          </summary>
+          <summary className="demo-muted cursor-pointer text-sm font-bold select-none">Advanced options</summary>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="block">
-              <span className="demo-muted mb-1 block text-xs font-semibold uppercase tracking-wide">
-                Custom model id (overrides quality)
+              <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">
+                Custom model id
               </span>
               <input
                 className="demo-input"
@@ -254,14 +365,8 @@ function App() {
             </label>
             {showPdfEngine && (
               <label className="block">
-                <span className="demo-muted mb-1 block text-xs font-semibold uppercase tracking-wide">
-                  PDF engine
-                </span>
-                <select
-                  className="demo-select"
-                  value={pdfEngine}
-                  onChange={(e) => setPdfEngine(e.target.value)}
-                >
+                <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">PDF engine</span>
+                <select className="demo-select" value={pdfEngine} onChange={(e) => setPdfEngine(e.target.value)}>
                   {PDF_ENGINES.map((eng) => (
                     <option key={eng.id} value={eng.id}>
                       {eng.label}
@@ -274,21 +379,16 @@ function App() {
         </details>
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            className="demo-button"
-            disabled={!file || loading}
-            onClick={onExtract}
-          >
-            {loading ? "Extracting…" : "Extract tables"}
+          <button type="button" className="demo-button" disabled={!file || loading} onClick={onExtract}>
+            {loading ? "Extracting…" : "✨ Extract tables"}
           </button>
-          {status && <span className="demo-muted text-sm">{status}</span>}
+          {status && <span className="demo-muted text-sm font-semibold">{status}</span>}
         </div>
       </section>
 
-      {/* Results */}
+      {/* results */}
       {result && sheet && (
-        <section className="demo-panel mt-6">
+        <section className="demo-panel rise-in mt-6">
           <div className="mb-3 flex flex-wrap gap-2">
             {result.sheets.map((s, i) => (
               <button
@@ -297,11 +397,13 @@ function App() {
                 onClick={() => setActiveSheet(i)}
                 className="demo-pill"
                 style={{
-                  borderColor: i === activeSheet ? "var(--lagoon-deep)" : "var(--chip-line)",
+                  borderColor: i === activeSheet ? "var(--violet)" : "var(--chip-line)",
                   color: i === activeSheet ? "var(--sea-ink)" : "var(--sea-ink-soft)",
+                  background:
+                    i === activeSheet ? "color-mix(in oklab, var(--violet) 18%, var(--chip-bg))" : undefined,
                 }}
               >
-                {s.name || `Sheet ${i + 1}`} ({s.rows.length})
+                {s.name || `Sheet ${i + 1}`} · {s.rows.length}
               </button>
             ))}
           </div>
@@ -333,13 +435,8 @@ function App() {
           </p>
 
           <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              type="button"
-              className="demo-button"
-              disabled={busyFmt !== null}
-              onClick={() => onDownload("xlsx")}
-            >
-              {busyFmt === "xlsx" ? "Preparing…" : "⬇︎ Excel (.xlsx)"}
+            <button type="button" className="demo-button" disabled={busyFmt !== null} onClick={() => onDownload("xlsx")}>
+              {busyFmt === "xlsx" ? "Preparing…" : "⬇︎ Excel"}
             </button>
             <button
               type="button"
@@ -347,7 +444,7 @@ function App() {
               disabled={busyFmt !== null}
               onClick={() => onDownload("csv")}
             >
-              ⬇︎ CSV (this sheet)
+              ⬇︎ CSV
             </button>
             <button
               type="button"

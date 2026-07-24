@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { DEFAULT_PDF_ENGINE, DEFAULT_TIER } from "../../lib/tiers"
+import { isAuthed } from "../../server/auth"
 import { env } from "../../server/node"
 import { OcrError, runOcr } from "../../server/ocr"
 
@@ -10,6 +11,9 @@ export const Route = createFileRoute("/api/extract")({
     handlers: {
       POST: async ({ request }) => {
         try {
+          if (!(await isAuthed(request))) {
+            return Response.json({ error: "Unauthorized." }, { status: 401 })
+          }
           const form = await request.formData()
           const file = form.get("file")
           if (!file || typeof file === "string") {

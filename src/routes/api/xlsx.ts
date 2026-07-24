@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { Workbook } from "exceljs"
 import type { Sheet } from "../../lib/tiers"
+import { isAuthed } from "../../server/auth"
 
 function sanitizeFilename(name: string): string {
   const stem = (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "")
@@ -23,6 +24,9 @@ export const Route = createFileRoute("/api/xlsx")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        if (!(await isAuthed(request))) {
+          return Response.json({ error: "Unauthorized." }, { status: 401 })
+        }
         const body = (await request.json().catch(() => null)) as
           | { sheets?: Sheet[]; filename?: string }
           | null

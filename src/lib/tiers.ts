@@ -48,12 +48,13 @@ export interface PdfEngineInfo {
 
 // OpenRouter's built-in PDF file-parser engines (used only for PDF uploads).
 export const PDF_ENGINES: PdfEngineInfo[] = [
+  { id: "auto", label: "Auto — free text layer, OCR fallback for scans (recommended)" },
   { id: "mistral-ocr", label: "Mistral OCR — best for scans/photos ($2 / 1k pages)" },
   { id: "native", label: "Model native — the model reads the PDF itself" },
   { id: "pdf-text", label: "PDF text — free, digital (text) PDFs only" },
 ]
 
-export const DEFAULT_PDF_ENGINE = "mistral-ocr"
+export const DEFAULT_PDF_ENGINE = "auto"
 
 export function modelForTier(tier: string, override?: string | null): string {
   const cleaned = override?.trim()
@@ -75,4 +76,11 @@ export interface ExtractResult {
   isPdf: boolean
   sheets: Sheet[]
   usage?: Record<string, unknown>
+  engineUsed?: string
+}
+
+export interface SessionInfo {
+  authRequired: boolean
+  authed: boolean
+  keyConfigured: boolean
 }

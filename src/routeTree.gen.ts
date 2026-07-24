@@ -12,6 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiExtractRouteImport } from './routes/api/extract'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as ApiLoginRouteImport } from './routes/api/login'
+import { Route as ApiLogoutRouteImport } from './routes/api/logout'
+import { Route as ApiSessionRouteImport } from './routes/api/session'
 import { Route as ApiXlsxRouteImport } from './routes/api/xlsx'
 
 const IndexRoute = IndexRouteImport.update({
@@ -29,6 +32,21 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiLoginRoute = ApiLoginRouteImport.update({
+  id: '/api/login',
+  path: '/api/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLogoutRoute = ApiLogoutRouteImport.update({
+  id: '/api/logout',
+  path: '/api/logout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSessionRoute = ApiSessionRouteImport.update({
+  id: '/api/session',
+  path: '/api/session',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiXlsxRoute = ApiXlsxRouteImport.update({
   id: '/api/xlsx',
   path: '/api/xlsx',
@@ -39,12 +57,18 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
+  '/api/session': typeof ApiSessionRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
+  '/api/session': typeof ApiSessionRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRoutesById {
@@ -52,20 +76,48 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/login': typeof ApiLoginRoute
+  '/api/logout': typeof ApiLogoutRoute
+  '/api/session': typeof ApiSessionRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/extract' | '/api/health' | '/api/xlsx'
+  fullPaths:
+    | '/'
+    | '/api/extract'
+    | '/api/health'
+    | '/api/login'
+    | '/api/logout'
+    | '/api/session'
+    | '/api/xlsx'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/extract' | '/api/health' | '/api/xlsx'
-  id: '__root__' | '/' | '/api/extract' | '/api/health' | '/api/xlsx'
+  to:
+    | '/'
+    | '/api/extract'
+    | '/api/health'
+    | '/api/login'
+    | '/api/logout'
+    | '/api/session'
+    | '/api/xlsx'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/extract'
+    | '/api/health'
+    | '/api/login'
+    | '/api/logout'
+    | '/api/session'
+    | '/api/xlsx'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiExtractRoute: typeof ApiExtractRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiLoginRoute: typeof ApiLoginRoute
+  ApiLogoutRoute: typeof ApiLogoutRoute
+  ApiSessionRoute: typeof ApiSessionRoute
   ApiXlsxRoute: typeof ApiXlsxRoute
 }
 
@@ -92,6 +144,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/login': {
+      id: '/api/login'
+      path: '/api/login'
+      fullPath: '/api/login'
+      preLoaderRoute: typeof ApiLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/logout': {
+      id: '/api/logout'
+      path: '/api/logout'
+      fullPath: '/api/logout'
+      preLoaderRoute: typeof ApiLogoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/session': {
+      id: '/api/session'
+      path: '/api/session'
+      fullPath: '/api/session'
+      preLoaderRoute: typeof ApiSessionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/xlsx': {
       id: '/api/xlsx'
       path: '/api/xlsx'
@@ -106,6 +179,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiExtractRoute: ApiExtractRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiLoginRoute: ApiLoginRoute,
+  ApiLogoutRoute: ApiLogoutRoute,
+  ApiSessionRoute: ApiSessionRoute,
   ApiXlsxRoute: ApiXlsxRoute,
 }
 export const routeTree = rootRouteImport
