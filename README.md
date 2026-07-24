@@ -72,12 +72,12 @@ npm run type-check   # tsc --noEmit
 
 1. Push this repo to GitHub (already done if you're reading this there).
 2. On [railway.com](https://railway.com) → **New Project → Deploy from GitHub repo** → pick `docsheet`.
-3. Railway reads [`railway.json`](railway.json): it builds with `npm run build`
-   and starts with `npm run start`, health-checking `/api/health`.
+3. Railway reads [`railway.json`](railway.json) — **Railpack** builder — building
+   with `npm run build` and starting with `npm run start`, health-checking `/api/health`.
 4. In the service **Variables** tab, add `OPENROUTER_API_KEY`.
 5. **Settings → Networking → Generate Domain** to get a public URL. Done.
 
-> The build needs Node 22+ — pinned via `engines` in `package.json` and `.nvmrc`.
+> Uses the **Railpack** builder. Node 22+ is pinned via `.node-version`, `.nvmrc`, and `engines`.
 
 ## API
 
