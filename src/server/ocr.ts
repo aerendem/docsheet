@@ -4,6 +4,7 @@
 
 import { DEFAULT_PDF_ENGINE, modelForTier, type Sheet } from "../lib/tiers"
 import { bytesToBase64, env } from "./node"
+import { hasTextLayer } from "./pdf-text-layer"
 
 const OPENROUTER_BASE_URL = (
   env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1"
@@ -157,6 +158,20 @@ export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResul
   const requested = (opts.pdfEngine || DEFAULT_PDF_ENGINE).trim()
 
   if (requested === "auto") {
+    // A scan has no text layer, so trying pdf-text first would buy an empty
+    // answer and still be billed. Probe locally and go straight to OCR.
+    if (hasTextLayer(file.bytes) === false) {
+      const viaOcr = await callModel(apiKey, model, content, "mistral-ocr")
+      return {
+        sheets: viaOcr.sheets,
+        model,
+        isPdf: true,
+        usage: viaOcr.usage,
+        cost: viaOcr.cost,
+        engineUsed: "mistral-ocr",
+      }
+    }
+
     const viaText = await callModel(apiKey, model, content, "pdf-text")
     if (hasContent(viaText.sheets)) {
       return {
