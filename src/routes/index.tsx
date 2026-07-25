@@ -42,7 +42,8 @@ import {
 export const Route = createFileRoute("/")({ component: Page })
 
 const PREVIEW_ROWS = 200
-const ACCEPT = ".pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,image/gif"
+const ACCEPT =
+  ".pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,image/gif,.xlsx,.xlsm,.csv,.tsv"
 /** Two at a time: fast enough to feel batched, gentle on rate limits. */
 const CONCURRENCY = 2
 const COLUMNS_KEY = "docsheet.combined.columns.v1"
@@ -50,6 +51,9 @@ const COMBINED_VIEW = "__combined"
 
 const isPdfFile = (f: File) =>
   f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+
+/** A spreadsheet is already a spreadsheet — it skips the model entirely. */
+const isSheetFile = (f: File) => /\.(xlsx|xlsm|xltx|csv|tsv)$/i.test(f.name)
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -303,13 +307,21 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const extractOne = async (doc: DocState) => {
     patch(doc.id, { status: "running", error: undefined })
     try {
+      const sheetOnly = isSheetFile(doc.file)
       const fd = new FormData()
       fd.append("file", doc.file)
-      fd.append("tier", tier)
-      if (customModel.trim()) fd.append("model", customModel.trim())
-      fd.append("pdfEngine", pdfEngine)
+      if (!sheetOnly) {
+        fd.append("tier", tier)
+        if (customModel.trim()) fd.append("model", customModel.trim())
+        fd.append("pdfEngine", pdfEngine)
+      }
 
-      const res = await fetch("/api/extract", { method: "POST", body: fd })
+      // A workbook is read on the server and comes back in the same shape an
+      // extraction does — no model, no cost.
+      const res = await fetch(sheetOnly ? "/api/sheet" : "/api/extract", {
+        method: "POST",
+        body: fd,
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
       patch(doc.id, { status: "done", result: data as ExtractResult })
@@ -445,8 +457,11 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
     (sum, d) => sum + (d.result?.sheets ?? []).reduce((n, s) => n + s.rows.length, 0),
     0,
   )
-  const queued = docs.filter((d) => d.status === "queued" || d.status === "error").length
+  const pending = docs.filter((d) => d.status === "queued" || d.status === "error")
+  const queued = pending.length
   const showPdfEngine = docs.some((d) => isPdfFile(d.file))
+  /** Nothing queued needs a model, so the tier and engine choices are noise. */
+  const sheetsOnly = docs.length > 0 && docs.every((d) => isSheetFile(d.file))
 
   const onDownload = async (fmt: "xlsx" | "csv" | "json") => {
     if (!outputSheets.length) return
@@ -516,7 +531,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             <strong>{t("no_key_title")}</strong>{" "}
             {t("no_key_body", { code: "OPENROUTER_API_KEY" })
               .split("OPENROUTER_API_KEY")
-              .flatMap((part, i) => (i === 0 ? [part] : [<code key={i}>OPENROUTER_API_KEY</code>, part]))}
+              .flatMap((part, i) => (i === 0 ? [part] : [<code key={i}>OPENROUTER_API_KEY</code>, part]))}{" "}
+            {t("no_key_sheets")}
           </span>
         </div>
       )}
@@ -569,6 +585,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             <span className="demo-muted text-sm">{t("drop_types")}</span>
           </span>
         </button>
+        <p className="demo-muted mt-2 text-center text-xs">{t("drop_sheet_note")}</p>
         <input
           ref={inputRef}
           type="file"
@@ -608,6 +625,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 >
                   <StatusMark status={d.status} />
                   <span className="min-w-0 flex-1 truncate font-semibold">{d.file.name}</span>
+                  {isSheetFile(d.file) && (
+                    <span className="island-kicker flex-shrink-0">{t("sheet_badge")}</span>
+                  )}
                   {d.status === "done" && (
                     <ReconMark reconciliation={reconciliations.get(d.id) ?? null} />
                   )}
@@ -634,8 +654,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           </div>
         )}
 
-        {/* quality */}
-        <div className="mt-6">
+        {/* quality — hidden when nothing queued needs a model */}
+        <div className="mt-6" hidden={sheetsOnly}>
           <p className="demo-section-title mb-3">{t("quality")}</p>
           {/* items-stretch + mt-auto keeps every price hint on one baseline,
               however many lines the blurb above it wraps to. */}
@@ -680,7 +700,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         </div>
 
         {/* advanced */}
-        <details className="mt-4">
+        <details className="mt-4" hidden={sheetsOnly}>
           <summary className="demo-muted cursor-pointer text-sm font-bold select-none">
             {t("advanced")}
           </summary>
@@ -726,10 +746,10 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           >
             <IconSparkle size={16} />
             {running
-              ? t("extracting")
+              ? t(sheetsOnly ? "sheet_reading" : "extracting")
               : queued > 1
-                ? t("extract_many", { n: queued })
-                : t("extract_one")}
+                ? t(sheetsOnly ? "sheet_read_many" : "extract_many", { n: queued })
+                : t(sheetsOnly ? "sheet_read_one" : "extract_one")}
           </button>
           {done.length > 0 && (
             <span className="demo-muted text-sm font-semibold">

@@ -17,6 +17,7 @@ Built with **TanStack Start** (React 19 + Vite + Nitro) and deploys free on
 |-------|--------------|
 | **Image** (PNG/JPG/WEBP/TIFF/BMP) | Sent to a vision model as an image. |
 | **PDF** | Sent through OpenRouter's built-in PDF **file-parser** (Mistral OCR by default) so even scanned pages work. |
+| **Spreadsheet** (XLSX/XLSM/CSV/TSV) | Read on the server (`src/server/sheets.ts`) — no model, no cost. Use this when you already have the table and just want the barcode matcher, the totals check, or a clean export. |
 
 The model is asked to return strict JSON describing one sheet per table. The
 server (`src/server/ocr.ts`) normalizes that into rows/columns, the browser
@@ -61,6 +62,18 @@ source stays individually switchable, because a name from a crowd-sourced
 database isn't the same claim as one from your own list. They merge into a
 single catalog in that priority order, so the source you trust most wins any
 disagreement.
+
+### Bring your own spreadsheet
+
+The matcher works on the `{columns, rows}` shape, not on anything the model
+produced, so it doesn't need OCR at all. Drop an `.xlsx` or `.csv` into the same
+dropzone and it goes straight to the matcher: the quality tiers disappear,
+nothing is sent to OpenRouter, and the file costs nothing to read. Barcodes
+stored as numbers survive (no `8.69774E+12`), dates come back as `dd.mm.yyyy`,
+and a Turkish semicolon-delimited CSV with decimal commas is detected as such.
+
+Mixed batches work too — a scanned invoice and last month's export stack into
+one combined sheet, matched together.
 
 ### Where the names land
 
@@ -139,6 +152,7 @@ npm run type-check   # tsc --noEmit
 The app also exposes plain HTTP endpoints (see `src/routes/api/`):
 
 - `POST /api/extract` — `multipart/form-data` with `file`, `tier`, optional `model`, `pdfEngine` → `{ sheets, model, ... }`
+- `POST /api/sheet` — `multipart/form-data` with `file` (.xlsx/.xlsm/.csv/.tsv) → `{ sheets }`, no model call
 - `POST /api/xlsx` — JSON `{ sheets, filename }` → `.xlsx` download
 - `GET  /api/catalog` — the barcode sources this build knows
 - `GET  /api/catalog?source=procsin` — `{ count, entries: [{ barcode, name, brand, price }] }` (add `&refresh=1` to bypass the cache)

@@ -17,6 +17,7 @@ import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiLoginRouteImport } from './routes/api/login'
 import { Route as ApiLogoutRouteImport } from './routes/api/logout'
 import { Route as ApiSessionRouteImport } from './routes/api/session'
+import { Route as ApiSheetRouteImport } from './routes/api/sheet'
 import { Route as ApiXlsxRouteImport } from './routes/api/xlsx'
 
 const IndexRoute = IndexRouteImport.update({
@@ -59,6 +60,11 @@ const ApiSessionRoute = ApiSessionRouteImport.update({
   path: '/api/session',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSheetRoute = ApiSheetRouteImport.update({
+  id: '/api/sheet',
+  path: '/api/sheet',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiXlsxRoute = ApiXlsxRouteImport.update({
   id: '/api/xlsx',
   path: '/api/xlsx',
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/api/login': typeof ApiLoginRoute
   '/api/logout': typeof ApiLogoutRoute
   '/api/session': typeof ApiSessionRoute
+  '/api/sheet': typeof ApiSheetRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/api/login': typeof ApiLoginRoute
   '/api/logout': typeof ApiLogoutRoute
   '/api/session': typeof ApiSessionRoute
+  '/api/sheet': typeof ApiSheetRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/api/login': typeof ApiLoginRoute
   '/api/logout': typeof ApiLogoutRoute
   '/api/session': typeof ApiSessionRoute
+  '/api/sheet': typeof ApiSheetRoute
   '/api/xlsx': typeof ApiXlsxRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/api/login'
     | '/api/logout'
     | '/api/session'
+    | '/api/sheet'
     | '/api/xlsx'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/api/login'
     | '/api/logout'
     | '/api/session'
+    | '/api/sheet'
     | '/api/xlsx'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/api/login'
     | '/api/logout'
     | '/api/session'
+    | '/api/sheet'
     | '/api/xlsx'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   ApiLoginRoute: typeof ApiLoginRoute
   ApiLogoutRoute: typeof ApiLogoutRoute
   ApiSessionRoute: typeof ApiSessionRoute
+  ApiSheetRoute: typeof ApiSheetRoute
   ApiXlsxRoute: typeof ApiXlsxRoute
 }
 
@@ -205,6 +218,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSessionRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/sheet': {
+      id: '/api/sheet'
+      path: '/api/sheet'
+      fullPath: '/api/sheet'
+      preLoaderRoute: typeof ApiSheetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/xlsx': {
       id: '/api/xlsx'
       path: '/api/xlsx'
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiLoginRoute: ApiLoginRoute,
   ApiLogoutRoute: ApiLogoutRoute,
   ApiSessionRoute: ApiSessionRoute,
+  ApiSheetRoute: ApiSheetRoute,
   ApiXlsxRoute: ApiXlsxRoute,
 }
 export const routeTree = rootRouteImport

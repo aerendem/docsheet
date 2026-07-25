@@ -33,17 +33,24 @@ const en = {
   hero_kicker: "PDF & image → spreadsheet",
   hero_title_lead: "Turn documents into spreadsheets",
   hero_body:
-    "Drop a stack of PDFs or photos — the best OCR models pull out every table, check the totals add up, and stack them into one sheet you can download as Excel, CSV, or JSON.",
+    "Drop a stack of PDFs or photos — the best OCR models pull out every table, check the totals add up, and stack them into one sheet you can download as Excel, CSV, or JSON. Already have a spreadsheet? Drop that in instead and go straight to the barcode matcher.",
   lock: "Lock",
 
   // key warning
   no_key_title: "No OpenRouter key set.",
   no_key_body: "Extraction needs {code} on the server.",
+  no_key_sheets: "Reading spreadsheets and matching barcodes work without it.",
 
   // dropzone + queue
   drop_first: "Drop PDFs or images, or click to browse",
   drop_more: "Add more documents",
-  drop_types: "PDF · PNG · JPG · WEBP · TIFF · max 25 MB each",
+  drop_types: "PDF · PNG · JPG · WEBP · TIFF · XLSX · CSV · max 25 MB each",
+  drop_sheet_note:
+    "Already have a spreadsheet? Drop the .xlsx or .csv straight in — it skips the model and goes to the matcher.",
+  sheet_badge: "spreadsheet",
+  sheet_read_one: "Read spreadsheet",
+  sheet_read_many: "Read {n} spreadsheets",
+  sheet_reading: "Reading…",
   queue_count_one: "{n} document",
   queue_count_many: "{n} documents",
   queue_clear: "Clear all",
@@ -197,15 +204,22 @@ const tr: Record<StringKey, string> = {
   hero_kicker: "PDF ve görsel → tablo",
   hero_title_lead: "Belgeleri tablolara dönüştürün",
   hero_body:
-    "Bir yığın PDF veya fotoğraf bırakın — en iyi OCR modelleri her tabloyu çıkarır, toplamların tuttuğunu denetler ve hepsini Excel, CSV ya da JSON olarak indirebileceğiniz tek bir sayfada birleştirir.",
+    "Bir yığın PDF veya fotoğraf bırakın — en iyi OCR modelleri her tabloyu çıkarır, toplamların tuttuğunu denetler ve hepsini Excel, CSV ya da JSON olarak indirebileceğiniz tek bir sayfada birleştirir. Elinizde tablo mu var? Onu bırakın, doğrudan barkod eşleştiriciye geçin.",
   lock: "Kilitle",
 
   no_key_title: "OpenRouter anahtarı tanımlı değil.",
   no_key_body: "Çıkarma işlemi için sunucuda {code} gerekir.",
+  no_key_sheets: "Tablo okuma ve barkod eşleştirme bu anahtar olmadan da çalışır.",
 
   drop_first: "PDF veya görselleri bırakın ya da seçmek için tıklayın",
   drop_more: "Başka belge ekleyin",
-  drop_types: "PDF · PNG · JPG · WEBP · TIFF · her biri en fazla 25 MB",
+  drop_types: "PDF · PNG · JPG · WEBP · TIFF · XLSX · CSV · her biri en fazla 25 MB",
+  drop_sheet_note:
+    "Elinizde tablo mu var? .xlsx ya da .csv dosyasını doğrudan bırakın — modele uğramadan eşleştiriciye gider.",
+  sheet_badge: "tablo",
+  sheet_read_one: "Tabloyu oku",
+  sheet_read_many: "{n} tabloyu oku",
+  sheet_reading: "Okunuyor…",
   queue_count_one: "{n} belge",
   queue_count_many: "{n} belge",
   queue_clear: "Tümünü temizle",
