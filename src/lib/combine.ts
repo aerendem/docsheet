@@ -10,6 +10,15 @@ import type { Sheet } from "./tiers"
 export interface ExtractedDoc {
   filename: string
   sheets: Sheet[]
+  /** Which table feeds the combined sheet. Defaults to the largest one. */
+  primaryIndex?: number
+}
+
+/** The chosen table, falling back to the automatic pick. */
+export function resolvePrimary(doc: ExtractedDoc): number {
+  const chosen = doc.primaryIndex
+  if (chosen !== undefined && chosen >= 0 && chosen < doc.sheets.length) return chosen
+  return pickPrimarySheet(doc.sheets)
 }
 
 export interface CombinedColumn {
@@ -116,16 +125,23 @@ export function pickPrimarySheet(sheets: Sheet[]): number {
   return best
 }
 
-/** Column set discovered across every document, in first-seen order. */
-export function discoverColumns(docs: ExtractedDoc[]): CombinedColumn[] {
+/**
+ * Column set discovered across every document, in first-seen order.
+ * `labelFor` lets the UI supply translated headings for known column keys.
+ */
+export function discoverColumns(
+  docs: ExtractedDoc[],
+  labelFor?: (key: string, fallback: string) => string,
+): CombinedColumn[] {
+  const name = (key: string, fallback: string) => labelFor?.(key, fallback) ?? fallback
   const seen = new Map<string, CombinedColumn>()
-  seen.set(SOURCE_KEY, { key: SOURCE_KEY, label: "Source", include: true })
+  seen.set(SOURCE_KEY, { key: SOURCE_KEY, label: name(SOURCE_KEY, "Source"), include: true })
 
   for (const doc of docs) {
-    const index = pickPrimarySheet(doc.sheets)
+    const index = resolvePrimary(doc)
     if (index === -1) continue
     for (const { key, label } of resolveHeaders(doc.sheets[index].columns)) {
-      if (!seen.has(key)) seen.set(key, { key, label, include: true })
+      if (!seen.has(key)) seen.set(key, { key, label: name(key, label), include: true })
     }
   }
   return [...seen.values()]
@@ -142,7 +158,7 @@ export function combine(docs: ExtractedDoc[], columns: CombinedColumn[]): Sheet 
   const rows: string[][] = []
 
   for (const doc of docs) {
-    const index = pickPrimarySheet(doc.sheets)
+    const index = resolvePrimary(doc)
     if (index === -1) continue
     const sheet = doc.sheets[index]
     const slots = resolveHeaders(sheet.columns).map(({ key }) => position.get(key) ?? -1)

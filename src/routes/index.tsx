@@ -11,12 +11,15 @@ import {
   IconUpload,
   IconX,
 } from "../components/icons"
+import { useLang } from "../components/lang"
+import type { StringKey } from "../lib/i18n"
 import { inferColumnKinds } from "../lib/cell-value"
 import {
   type CombinedColumn,
   combine,
   discoverColumns,
   type ExtractedDoc,
+  resolvePrimary,
 } from "../lib/combine"
 import { type Reconciliation, reconcile } from "../lib/reconcile"
 import {
@@ -68,20 +71,39 @@ function toCsv(sheet: Sheet): string {
 const stem = (name: string) =>
   (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "") || "export"
 
-const engineLabel = (id?: string) =>
-  id === "pdf-text"
-    ? "text layer · free"
-    : id === "mistral-ocr"
-      ? "Mistral OCR"
-      : id === "native"
-        ? "native"
-        : id
+const ENGINE_KEYS: Record<string, StringKey> = {
+  "pdf-text": "engine_used_text",
+  "mistral-ocr": "engine_used_ocr",
+  native: "engine_used_native",
+}
 
-const money = (n: number) =>
-  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const ENGINE_LABEL_KEYS: Record<string, StringKey> = {
+  auto: "engine_auto",
+  "mistral-ocr": "engine_mistral",
+  native: "engine_native",
+  "pdf-text": "engine_pdf_text",
+}
+
+const COLUMN_LABEL_KEYS: Record<string, StringKey> = {
+  __source: "col_source",
+  barcode: "col_barcode",
+  code: "col_code",
+  item: "col_item",
+  quantity: "col_quantity",
+  unit: "col_unit",
+  unit_price: "col_unit_price",
+  discount: "col_discount",
+  vat: "col_vat",
+  amount: "col_amount",
+  date: "col_date",
+}
+
+const money = (n: number, locale: string) =>
+  n.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 // ── Route shell: session → gate or app ────────────────────────────────────
 function Page() {
+  const { t } = useLang()
   const [session, setSession] = useState<SessionInfo | null>(null)
 
   const refresh = () =>
@@ -97,7 +119,7 @@ function Page() {
   if (!session) {
     return (
       <main className="demo-page demo-center">
-        <div className="demo-muted text-sm">Loading…</div>
+        <div className="demo-muted text-sm">{t("loading")}</div>
       </main>
     )
   }
@@ -117,6 +139,7 @@ function Page() {
 
 // ── Password gate ─────────────────────────────────────────────────────────
 function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
+  const { t } = useLang()
   const [pw, setPw] = useState("")
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -133,7 +156,7 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.error ?? "Wrong password.")
+        throw new Error(d.error ?? t("gate_wrong"))
       }
       onUnlocked()
     } catch (e) {
@@ -152,9 +175,9 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
         >
           <IconLock size={20} />
         </div>
-        <p className="island-kicker mb-2">docsheet</p>
-        <h1 className="display-title mb-2 text-2xl font-extrabold">Private workspace</h1>
-        <p className="demo-muted mb-6 text-sm">Enter the password to continue.</p>
+        <p className="island-kicker mb-2">{t("gate_kicker")}</p>
+        <h1 className="display-title mb-2 text-2xl font-extrabold">{t("gate_title")}</h1>
+        <p className="demo-muted mb-6 text-sm">{t("gate_hint")}</p>
         <input
           autoFocus
           type="password"
@@ -173,7 +196,7 @@ function PasswordGate({ onUnlocked }: { onUnlocked: () => void }) {
           </p>
         )}
         <button type="submit" className="demo-button w-full" disabled={busy || !pw}>
-          {busy ? "Unlocking…" : "Unlock"}
+          {busy ? t("gate_unlocking") : t("gate_unlock")}
         </button>
       </form>
     </main>
@@ -217,7 +240,10 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promis
 
 // ── Main app ──────────────────────────────────────────────────────────────
 function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void }) {
+  const { t, locale } = useLang()
   const [docs, setDocs] = useState<DocState[]>([])
+  /** Which table from each document feeds the combined sheet. */
+  const [primary, setPrimary] = useState<Record<string, number>>({})
   const [dragging, setDragging] = useState(false)
   const [tier, setTier] = useState<QualityTier>(DEFAULT_TIER)
   const [customModel, setCustomModel] = useState("")
@@ -304,11 +330,23 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
     () =>
       docs
         .filter((d) => d.result)
-        .map((d) => ({ filename: d.file.name, sheets: d.result?.sheets ?? [] })),
-    [docs],
+        .map((d) => ({
+          filename: d.file.name,
+          sheets: d.result?.sheets ?? [],
+          primaryIndex: primary[d.id],
+        })),
+    [docs, primary],
   )
 
-  const discovered = useMemo(() => discoverColumns(extracted), [extracted])
+  const labelFor = useMemo(
+    () => (key: string, fallback: string) =>
+      COLUMN_LABEL_KEYS[key] ? t(COLUMN_LABEL_KEYS[key]) : fallback,
+    [t],
+  )
+  const discovered = useMemo(
+    () => discoverColumns(extracted, labelFor),
+    [extracted, labelFor],
+  )
   const columns: CombinedColumn[] = useMemo(
     () =>
       discovered.map((c) => ({
@@ -344,6 +382,13 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
   const sheet = currentSheets[Math.min(activeSheet, currentSheets.length - 1)]
   const currentRecon = currentDoc ? reconciliations.get(currentDoc.id) : null
+  const isPrimaryHere = currentDoc
+    ? resolvePrimary({
+        filename: currentDoc.file.name,
+        sheets: currentDoc.result?.sheets ?? [],
+        primaryIndex: primary[currentDoc.id],
+      }) === activeSheet
+    : false
 
   const numericColumns = useMemo(
     () => (sheet ? inferColumnKinds(sheet, PREVIEW_ROWS).map((k) => k === "number") : []),
@@ -401,7 +446,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       {/* hero */}
       <header className="mb-8">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <p className="island-kicker">PDF &amp; image → spreadsheet</p>
+          <p className="island-kicker">{t("hero_kicker")}</p>
           {session.authRequired && (
             <button
               type="button"
@@ -409,28 +454,27 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               className="demo-button demo-button-secondary flex-shrink-0 !px-3.5 !py-1.5 text-xs"
             >
               <IconLock size={14} />
-              Lock
+              {t("lock")}
             </button>
           )}
         </div>
         {/* Only the full stop carries the accent — the eye should land on the
             CTA, not on a noun in the headline. */}
         <h1 className="demo-title mb-3">
-          Turn documents into spreadsheets<span className="accent-text">.</span>
+          {t("hero_title_lead")}
+          <span className="accent-text">.</span>
         </h1>
-        <p className="demo-muted max-w-2xl text-base sm:text-lg">
-          Drop a stack of PDFs or photos — the best OCR models pull out every table, check
-          the totals add up, and stack them into one sheet you can download as{" "}
-          <strong>Excel</strong>, <strong>CSV</strong>, or JSON.
-        </p>
+        <p className="demo-muted max-w-2xl text-base sm:text-lg">{t("hero_body")}</p>
       </header>
 
       {session.keyConfigured === false && (
         <div className="demo-alert mb-6">
           <IconAlert size={17} className="mt-px flex-shrink-0" />
           <span>
-            <strong>No OpenRouter key set.</strong> Extraction needs{" "}
-            <code>OPENROUTER_API_KEY</code> on the server.
+            <strong>{t("no_key_title")}</strong>{" "}
+            {t("no_key_body", { code: "OPENROUTER_API_KEY" })
+              .split("OPENROUTER_API_KEY")
+              .flatMap((part, i) => (i === 0 ? [part] : [<code key={i}>OPENROUTER_API_KEY</code>, part]))}
           </span>
         </div>
       )}
@@ -478,13 +522,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           </span>
           <span className="flex flex-col gap-1">
             <span className="font-bold" style={{ color: "var(--ink)" }}>
-              {docs.length
-                ? "Add more documents"
-                : "Drop PDFs or images, or click to browse"}
+              {docs.length ? t("drop_more") : t("drop_first")}
             </span>
-            <span className="demo-muted text-sm">
-              PDF · PNG · JPG · WEBP · TIFF · max 25 MB each
-            </span>
+            <span className="demo-muted text-sm">{t("drop_types")}</span>
           </span>
         </button>
         <input
@@ -504,7 +544,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           <div className="mt-5">
             <div className="mb-2 flex items-center justify-between gap-3">
               <p className="demo-section-title">
-                {docs.length} document{docs.length === 1 ? "" : "s"}
+                {t(docs.length === 1 ? "queue_count_one" : "queue_count_many", {
+                  n: docs.length,
+                })}
               </p>
               <button
                 type="button"
@@ -512,7 +554,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 className="text-xs font-semibold"
                 style={{ color: "var(--ink-faint)" }}
               >
-                Clear all
+                {t("queue_clear")}
               </button>
             </div>
             <ul className="m-0 flex list-none flex-col gap-1 p-0">
@@ -538,7 +580,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                   <button
                     type="button"
                     onClick={() => removeDoc(d.id)}
-                    aria-label={`Remove ${d.file.name}`}
+                    aria-label={t("queue_remove", { name: d.file.name })}
                     className="flex-shrink-0 rounded p-1"
                     style={{ color: "var(--ink-faint)" }}
                   >
@@ -552,17 +594,17 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
         {/* quality */}
         <div className="mt-6">
-          <p className="demo-section-title mb-3">Quality</p>
+          <p className="demo-section-title mb-3">{t("quality")}</p>
           {/* items-stretch + mt-auto keeps every price hint on one baseline,
               however many lines the blurb above it wraps to. */}
           <div className="grid items-stretch gap-3 sm:grid-cols-3">
-            {TIERS.map((t) => {
-              const active = tier === t.id
+            {TIERS.map((info) => {
+              const active = tier === info.id
               return (
                 <button
-                  key={t.id}
+                  key={info.id}
                   type="button"
-                  onClick={() => setTier(t.id)}
+                  onClick={() => setTier(info.id)}
                   aria-pressed={active}
                   className="demo-card flex flex-col text-left transition"
                   style={{
@@ -572,7 +614,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 >
                   <div className="flex h-5 items-center justify-between gap-2">
                     <span className="font-extrabold" style={{ color: "var(--ink)" }}>
-                      {t.label}
+                      {t(`tier_${info.id}_label` as StringKey)}
                     </span>
                     {active && (
                       <span
@@ -581,9 +623,13 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                       />
                     )}
                   </div>
-                  <p className="demo-muted mt-2 text-sm leading-snug">{t.blurb}</p>
+                  <p className="demo-muted mt-2 text-sm leading-snug">
+                    {t(`tier_${info.id}_blurb` as StringKey)}
+                  </p>
                   <p className="mt-auto pt-3 text-xs" style={{ color: "var(--ink-faint)" }}>
-                    {t.priceHint}
+                    {t("tier_price", {
+                      price: money(Number(info.pricePerMillion), locale),
+                    })}
                   </p>
                 </button>
               )
@@ -594,12 +640,12 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         {/* advanced */}
         <details className="mt-4">
           <summary className="demo-muted cursor-pointer text-sm font-bold select-none">
-            Advanced options
+            {t("advanced")}
           </summary>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">
-                Custom model id
+                {t("custom_model")}
               </span>
               <input
                 className="demo-input"
@@ -611,7 +657,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             {showPdfEngine && (
               <label className="block">
                 <span className="demo-muted mb-1 block text-xs font-bold uppercase tracking-wide">
-                  PDF engine
+                  {t("pdf_engine")}
                 </span>
                 <select
                   className="demo-select"
@@ -620,7 +666,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 >
                   {PDF_ENGINES.map((eng) => (
                     <option key={eng.id} value={eng.id}>
-                      {eng.label}
+                      {ENGINE_LABEL_KEYS[eng.id] ? t(ENGINE_LABEL_KEYS[eng.id]) : eng.label}
                     </option>
                   ))}
                 </select>
@@ -638,17 +684,21 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           >
             <IconSparkle size={16} />
             {running
-              ? "Extracting…"
+              ? t("extracting")
               : queued > 1
-                ? `Extract ${queued} documents`
-                : "Extract tables"}
+                ? t("extract_many", { n: queued })
+                : t("extract_one")}
           </button>
           {done.length > 0 && (
             <span className="demo-muted text-sm font-semibold">
-              {done.length} done · {totalRows} rows
+              {t("status_done", { n: done.length, rows: totalRows })}
               {totalCost > 0 ? ` · ${formatCost(totalCost)}` : ""}
               {done.length === 1 && done[0].result?.engineUsed
-                ? ` · ${engineLabel(done[0].result.engineUsed)}`
+                ? ` · ${
+                    ENGINE_KEYS[done[0].result.engineUsed]
+                      ? t(ENGINE_KEYS[done[0].result.engineUsed])
+                      : done[0].result.engineUsed
+                  }`
                 : ""}
             </span>
           )}
@@ -666,7 +716,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 aria-pressed={effectiveView === COMBINED_VIEW}
                 className={`demo-pill${effectiveView === COMBINED_VIEW ? " demo-pill-active" : ""}`}
               >
-                Combined · {combinedSheet.rows.length}
+                {t("combined")} · {combinedSheet.rows.length}
               </button>
               {done.map((d) => (
                 <button
@@ -699,16 +749,23 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               <span>
                 {currentRecon.ok ? (
                   <>
-                    <strong>Totals reconcile.</strong> “{currentRecon.columnName}” adds up to{" "}
-                    {money(currentRecon.sum)}, matching “{currentRecon.statedLabel}” on the
-                    document.
+                    <strong>{t("recon_ok_title")}</strong>{" "}
+                    {t("recon_ok_body", {
+                      column: currentRecon.columnName,
+                      sum: money(currentRecon.sum, locale),
+                      label: currentRecon.statedLabel,
+                    })}
                   </>
                 ) : (
                   <>
-                    <strong>Totals don’t match.</strong> “{currentRecon.columnName}” adds up to{" "}
-                    {money(currentRecon.sum)} but the document states {money(currentRecon.stated)}{" "}
-                    for “{currentRecon.statedLabel}” — off by {money(Math.abs(currentRecon.delta))}.
-                    Worth checking before you use this one.
+                    <strong>{t("recon_bad_title")}</strong>{" "}
+                    {t("recon_bad_body", {
+                      column: currentRecon.columnName,
+                      sum: money(currentRecon.sum, locale),
+                      stated: money(currentRecon.stated, locale),
+                      label: currentRecon.statedLabel,
+                      delta: money(Math.abs(currentRecon.delta), locale),
+                    })}
                   </>
                 )}
               </span>
@@ -731,6 +788,21 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                     {s.name || `Sheet ${i + 1}`} · {s.rows.length}
                   </button>
                 ))}
+              {/* Which of this document's tables feeds the combined sheet.
+                  The automatic pick is the largest table, which is right for an
+                  invoice but wrong when a document holds two real tables. */}
+              {currentDoc && showCombined && currentSheets.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setPrimary((prev) => ({ ...prev, [currentDoc.id]: activeSheet }))}
+                  disabled={isPrimaryHere}
+                  aria-pressed={isPrimaryHere}
+                  className={`demo-pill ml-auto${isPrimaryHere ? " demo-pill-active" : ""}`}
+                >
+                  {isPrimaryHere ? <IconCheck size={13} /> : <IconColumns size={13} />}
+                  {isPrimaryHere ? t("in_combined") : t("use_in_combined")}
+                </button>
+              )}
               {effectiveView === COMBINED_VIEW && (
                 <button
                   type="button"
@@ -739,7 +811,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                   aria-expanded={editingColumns}
                 >
                   <IconColumns size={13} />
-                  Columns
+                  {t("columns")}
                 </button>
               )}
             </div>
@@ -747,18 +819,15 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
           {editingColumns && effectiveView === COMBINED_VIEW && (
             <div className="demo-card mb-4">
-              <p className="demo-section-title mb-1">Combined columns</p>
-              <p className="demo-muted mb-3 text-xs">
-                Rename or switch off columns — the choice is remembered for next time, so a
-                supplier’s layout only has to be set up once.
-              </p>
+              <p className="demo-section-title mb-1">{t("columns_title")}</p>
+              <p className="demo-muted mb-3 text-xs">{t("columns_hint")}</p>
               <div className="grid gap-2 sm:grid-cols-2">
                 {columns.map((c) => (
                   <div key={c.key} className="flex items-center gap-2">
                     <input
                       type="checkbox"
                       checked={c.include}
-                      aria-label={`Include ${c.label}`}
+                      aria-label={t("columns_include", { name: c.label })}
                       onChange={(e) =>
                         savePrefs({
                           ...columnPrefs,
@@ -769,7 +838,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                     <input
                       className="demo-input !py-1.5 text-sm"
                       value={c.label}
-                      aria-label={`Rename ${c.label}`}
+                      aria-label={t("columns_rename", { name: c.label })}
                       onChange={(e) =>
                         savePrefs({
                           ...columnPrefs,
@@ -785,7 +854,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 className="demo-button demo-button-secondary mt-3 !px-3.5 !py-1.5 text-xs"
                 onClick={() => savePrefs({})}
               >
-                Reset to detected
+                {t("columns_reset")}
               </button>
             </div>
           )}
@@ -816,9 +885,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
           </div>
           <p className="demo-muted mt-3 text-sm">
             {sheet.rows.length > PREVIEW_ROWS
-              ? `Showing first ${PREVIEW_ROWS} of ${sheet.rows.length} rows — the download has them all.`
-              : `${sheet.rows.length} row${sheet.rows.length === 1 ? "" : "s"}.`}
-            {currentSheets.length > 1 && " CSV saves this sheet only; Excel saves all of them."}
+              ? t("rows_truncated", { n: PREVIEW_ROWS, total: sheet.rows.length })
+              : t(sheet.rows.length === 1 ? "rows_one" : "rows_many", { n: sheet.rows.length })}
+            {currentSheets.length > 1 && t("csv_note")}
           </p>
 
           <div className="mt-5 flex flex-wrap gap-2.5">
@@ -829,7 +898,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               onClick={() => onDownload("xlsx")}
             >
               <IconDownload size={16} />
-              {busyFmt === "xlsx" ? "Preparing…" : "Excel"}
+              {busyFmt === "xlsx" ? t("preparing") : "Excel"}
             </button>
             <button
               type="button"
@@ -875,6 +944,7 @@ function StatusMark({ status }: { status: DocStatus }) {
 }
 
 function ReconMark({ reconciliation }: { reconciliation: Reconciliation | null }) {
+  const { t, locale } = useLang()
   if (!reconciliation) return null
   return (
     <span
@@ -882,11 +952,21 @@ function ReconMark({ reconciliation }: { reconciliation: Reconciliation | null }
       style={{ color: reconciliation.ok ? "var(--ink-faint)" : "var(--danger)" }}
       title={
         reconciliation.ok
-          ? `${reconciliation.columnName} sums to ${money(reconciliation.sum)}, matching ${reconciliation.statedLabel}`
-          : `${reconciliation.columnName} sums to ${money(reconciliation.sum)} but the document states ${money(reconciliation.stated)}`
+          ? t("recon_ok_body", {
+              column: reconciliation.columnName,
+              sum: money(reconciliation.sum, locale),
+              label: reconciliation.statedLabel,
+            })
+          : t("recon_bad_body", {
+              column: reconciliation.columnName,
+              sum: money(reconciliation.sum, locale),
+              stated: money(reconciliation.stated, locale),
+              label: reconciliation.statedLabel,
+              delta: money(Math.abs(reconciliation.delta), locale),
+            })
       }
     >
-      {reconciliation.ok ? "totals ✓" : "totals ✕"}
+      {reconciliation.ok ? t("totals_ok") : t("totals_bad")}
     </span>
   )
 }

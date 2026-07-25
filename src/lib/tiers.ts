@@ -10,7 +10,8 @@ export interface TierInfo {
   blurb: string
   /** OpenRouter model id — verified live against /api/v1/models (July 2026). */
   model: string
-  priceHint: string
+  /** Input price per million tokens, formatted by the UI. */
+  pricePerMillion: string
 }
 
 // The server maps tier -> model at request time; the client only renders the
@@ -21,21 +22,21 @@ export const TIERS: TierInfo[] = [
     label: "Fast",
     blurb: "Quick & cheap — great for clean digital docs",
     model: "google/gemini-3.5-flash-lite",
-    priceHint: "≈ $0.30 / 1M input tokens",
+    pricePerMillion: "0.30",
   },
   {
     id: "balanced",
     label: "Balanced",
     blurb: "Best accuracy-for-price — the sweet spot",
     model: "google/gemini-3.6-flash",
-    priceHint: "≈ $1.50 / 1M input tokens",
+    pricePerMillion: "1.50",
   },
   {
     id: "best",
     label: "Best",
     blurb: "Highest accuracy — messy scans & dense tables",
     model: "openai/gpt-5.6-terra-pro",
-    priceHint: "≈ $2.50 / 1M input tokens",
+    pricePerMillion: "2.50",
   },
 ]
 
