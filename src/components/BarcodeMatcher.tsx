@@ -33,6 +33,12 @@ import {
 import { useLang } from "./lang"
 
 const STORAGE_KEY = "docsheet.matcher.v2"
+/**
+ * Shops that are on by default. The server is the authority on which presets
+ * exist (GET /api/catalog); this list only decides what a first-time visitor
+ * starts with, so an id that no longer ships is simply never loaded.
+ */
+const PRESET_SHOP_IDS = ["naturenurture", "procsin"]
 const REGISTRY_ID = "titck"
 const OPEN_ID = "openfacts"
 /** Enough to paste a supplier's whole price list, not enough to wedge storage. */
@@ -63,15 +69,19 @@ interface Persisted {
   extras: ExtraField[]
 }
 
+// Every source is on out of the box: the common case is wanting names, not
+// picking suppliers. Switching one off is the deliberate act, and it sticks.
+// Nothing is actually fetched until a sheet with barcodes turns up — see the
+// effects at the bottom of the panel.
 const DEFAULTS: Persisted = {
   enabled: true,
   mode: "new",
   label: "",
   ownText: "",
   useOwn: true,
-  shops: [],
-  useRegistry: false,
-  autoOpen: false,
+  shops: PRESET_SHOP_IDS,
+  useRegistry: true,
+  autoOpen: true,
   extras: [],
 }
 
@@ -91,6 +101,8 @@ export interface MatcherApi {
   lookingUp: boolean
   error: string | null
   loadShop: (idOrUrl: string, refresh?: boolean) => Promise<void>
+  loadRegistry: () => Promise<void>
+  dropShop: (key: string) => void
   lookUp: (barcodes: string[]) => Promise<void>
   importFile: (file: File) => Promise<void>
   reset: () => void
@@ -155,8 +167,22 @@ export function useBarcodeMatcher(): MatcherApi {
   // switching it back on doesn't mean fetching them again.
   const catalog = useMemo(() => {
     const shops = state.shops.map((key) => shopEntries[key] ?? [])
-    return buildCatalog([lookupEntries, ...shops, state.useOwn ? own.entries : []])
-  }, [lookupEntries, shopEntries, state.shops, state.useOwn, own.entries])
+    // Answers already fetched are kept in memory, but a source that has been
+    // switched off stops contributing them — otherwise unticking it leaves its
+    // names on screen until a reload.
+    const lookups = lookupEntries.filter((entry) =>
+      entry.source === REGISTRY_ID ? state.useRegistry : state.autoOpen,
+    )
+    return buildCatalog([lookups, ...shops, state.useOwn ? own.entries : []])
+  }, [
+    lookupEntries,
+    shopEntries,
+    state.shops,
+    state.useOwn,
+    state.useRegistry,
+    state.autoOpen,
+    own.entries,
+  ])
 
   const options: FillOptions = useMemo(
     () => ({
@@ -237,39 +263,31 @@ export function useBarcodeMatcher(): MatcherApi {
     })
   }, [])
 
-  // Switching a shop on — now, or in a session three days ago whose choice was
-  // remembered — is what fetches its catalog. `attempted` keeps a failure from
-  // retrying on every render; switching the shop off clears it.
-  const attempted = useRef(new Set<string>())
-  useEffect(() => {
-    if (!hydrated) return
-    for (const key of attempted.current) {
-      if (!state.shops.includes(key)) attempted.current.delete(key)
-    }
-    for (const key of state.shops) {
-      if (attempted.current.has(key) || shopEntries[key]) continue
-      attempted.current.add(key)
-      loadShop(key).catch(() =>
-        setState((prev) => ({ ...prev, shops: prev.shops.filter((s) => s !== key) })),
-      )
-    }
-  }, [hydrated, state.shops, shopEntries, loadShop])
-
   // The registry index lives on the server; all the browser needs is proof it
-  // is there and how much it covers.
-  useEffect(() => {
-    if (!hydrated || !state.useRegistry || registryCount !== null) return
-    fetch(`/api/catalog?source=${REGISTRY_ID}`)
-      .then(async (r) => {
-        const d = await r.json()
-        if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`)
-        setRegistryCount(d.count as number)
-      })
-      .catch((e) => {
-        setError((e as Error).message)
-        setState((prev) => ({ ...prev, useRegistry: false }))
-      })
-  }, [hydrated, state.useRegistry, registryCount])
+  // is there and how much it covers. A failure switches the source off rather
+  // than leaving a checkbox ticked with nothing behind it.
+  // A ref, not just `registryCount`: two effect runs in the same commit would
+  // both pass a state-based guard and ask the server twice.
+  const registryLoading = useRef(false)
+  const loadRegistry = useCallback(async () => {
+    if (registryCount !== null || registryLoading.current) return
+    registryLoading.current = true
+    try {
+      const res = await fetch(`/api/catalog?source=${REGISTRY_ID}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
+      setRegistryCount(data.count as number)
+    } catch (e) {
+      setError((e as Error).message)
+      setState((prev) => ({ ...prev, useRegistry: false }))
+    } finally {
+      registryLoading.current = false
+    }
+  }, [registryCount])
+
+  const dropShop = useCallback((key: string) => {
+    setState((prev) => ({ ...prev, shops: prev.shops.filter((s) => s !== key) }))
+  }, [])
 
   const reset = useCallback(() => {
     setLookupEntries([])
@@ -291,6 +309,8 @@ export function useBarcodeMatcher(): MatcherApi {
     lookingUp,
     error,
     loadShop,
+    loadRegistry,
+    dropShop,
     lookUp,
     importFile,
     reset,
@@ -388,6 +408,26 @@ export default function BarcodeMatcher({
     setNewShop("")
   }
 
+  // Nothing is fetched until there is something to match. Every source being on
+  // by default would otherwise mean two shop crawls and an 18,000-row workbook
+  // for someone who only wanted to convert a PDF.
+  const needed = state.enabled && stats.hasBarcodeColumn
+  const attempted = useRef(new Set<string>())
+  useEffect(() => {
+    if (!needed) return
+    for (const key of attempted.current) {
+      if (!state.shops.includes(key)) attempted.current.delete(key)
+    }
+    for (const key of state.shops) {
+      // `attempted` keeps a failure from retrying on every render; switching
+      // the source off and on again is what asks for another go.
+      if (attempted.current.has(key) || matcher.shopEntries[key]) continue
+      attempted.current.add(key)
+      matcher.loadShop(key).catch(() => matcher.dropShop(key))
+    }
+    if (state.useRegistry) matcher.loadRegistry()
+  }, [needed, state.shops, state.useRegistry, matcher.shopEntries, matcher.loadShop, matcher.loadRegistry, matcher.dropShop])
+
   // Every code already sent to a per-barcode source. Without it an unknown
   // barcode comes back unnamed, stays unmatched, and asks to be looked up
   // again — forever.
@@ -397,13 +437,13 @@ export default function BarcodeMatcher({
   // about to name. A failed crawl drops the shop, so this can't wait forever.
   const shopsPending = state.shops.some((key) => !matcher.shopEntries[key])
   useEffect(() => {
-    if (!state.enabled || !perCodeOn || matcher.lookingUp || shopsPending) return
+    if (!needed || !perCodeOn || matcher.lookingUp || shopsPending) return
     const fresh = stats.unmatched.filter((code) => !tried.current.has(code))
     if (!fresh.length) return
     const batch = fresh.slice(0, AUTO_BATCH)
     for (const code of batch) tried.current.add(code)
     matcher.lookUp(batch)
-  }, [state.enabled, perCodeOn, stats.unmatched, matcher.lookingUp, matcher.lookUp, shopsPending])
+  }, [needed, perCodeOn, stats.unmatched, matcher.lookingUp, matcher.lookUp, shopsPending])
 
   return (
     <section className="demo-panel rise-in mt-6">

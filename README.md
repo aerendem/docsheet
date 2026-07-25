@@ -57,11 +57,16 @@ each product's EAN in `schema.org` JSON-LD, which is what "any other shop"
 relies on. A shop that puts an internal stock code there instead is ignored
 rather than trusted: only real GTIN-length codes are indexed.
 
-**Use all sources** switches everything on at once — the common case — and each
-source stays individually switchable, because a name from a crowd-sourced
-database isn't the same claim as one from your own list. They merge into a
-single catalog in that priority order, so the source you trust most wins any
-disagreement.
+**Every source is on by default** — the common case is wanting names, not
+picking suppliers — and switching one off is what sticks, per browser. Each is
+individually switchable because a name from a crowd-sourced database isn't the
+same claim as one from your own list; they merge into a single catalog in the
+priority order above, so the source you trust most wins any disagreement.
+
+Nothing is fetched until a sheet with barcodes turns up: converting a PDF that
+has no barcode column costs no crawls, no registry download and no lookups. A
+source that is switched off stops contributing immediately, including answers
+already fetched in that session.
 
 ### Bring your own spreadsheet
 
