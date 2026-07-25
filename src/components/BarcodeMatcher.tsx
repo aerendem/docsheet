@@ -2,18 +2,26 @@
 //
 // State lives here (and in localStorage) rather than in the page: the catalog
 // outlives any single upload, so a supplier's list only has to be set up once.
-// The page uses `catalog` + `options` to fill a column into whatever sheets it
+// The page uses `catalog` + `options` to fill columns into whatever sheets it
 // is about to show or download.
+//
+// Sources come in two shapes. A brand shop is small enough to download whole
+// and match in the browser; a registry (the TİTCK drug list) and the open GTIN
+// databases are far too big for that, so they answer per barcode and only for
+// the codes nothing else could name.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildCatalog,
   type Catalog,
   type CatalogEntry,
+  EXTRA_FIELDS,
+  type ExtraField,
   type FillMode,
   type FillOptions,
   parseCatalogList,
 } from "../lib/barcode"
+import type { StringKey } from "../lib/i18n"
 import {
   IconAlert,
   IconBarcode,
@@ -24,10 +32,22 @@ import {
 } from "./icons"
 import { useLang } from "./lang"
 
-const STORAGE_KEY = "docsheet.matcher.v1"
-const SHOP_SOURCE = "naturenurture"
+const STORAGE_KEY = "docsheet.matcher.v2"
+const REGISTRY_ID = "titck"
+const OPEN_ID = "openfacts"
 /** Enough to paste a supplier's whole price list, not enough to wedge storage. */
 const MAX_LIST_CHARS = 500_000
+const UNMATCHED_SHOWN = 24
+/** Matches the server's per-request cap on per-barcode lookups. */
+const AUTO_BATCH = 200
+
+export interface SourceInfo {
+  id: string
+  label: string
+  site: string
+  kind: "shop" | "registry" | "open"
+  sector?: string
+}
 
 interface Persisted {
   enabled: boolean
@@ -35,9 +55,12 @@ interface Persisted {
   label: string
   ownText: string
   useOwn: boolean
-  useShop: boolean
+  /** Preset shop ids and pasted shop URLs, both crawled the same way. */
+  shops: string[]
+  useRegistry: boolean
   /** Look codes up in the open databases without being asked each time. */
   autoOpen: boolean
+  extras: ExtraField[]
 }
 
 const DEFAULTS: Persisted = {
@@ -46,14 +69,10 @@ const DEFAULTS: Persisted = {
   label: "",
   ownText: "",
   useOwn: true,
-  useShop: false,
+  shops: [],
+  useRegistry: false,
   autoOpen: false,
-}
-
-interface SourceInfo {
-  id: string
-  label: string
-  site: string
+  extras: [],
 }
 
 export interface MatcherApi {
@@ -61,13 +80,17 @@ export interface MatcherApi {
   set: (patch: Partial<Persisted>) => void
   catalog: Catalog
   options: FillOptions
+  sources: SourceInfo[]
   ownCount: number
   ownSkipped: number
-  shop: { entries: CatalogEntry[]; info: SourceInfo | null; loading: boolean }
+  /** Loaded shop catalogs, keyed by preset id or pasted URL. */
+  shopEntries: Record<string, CatalogEntry[]>
+  loadingShops: string[]
+  registryCount: number | null
   lookupCount: number
   lookingUp: boolean
   error: string | null
-  loadShop: (refresh?: boolean) => Promise<void>
+  loadShop: (idOrUrl: string, refresh?: boolean) => Promise<void>
   lookUp: (barcodes: string[]) => Promise<void>
   importFile: (file: File) => Promise<void>
   reset: () => void
@@ -83,13 +106,16 @@ function load(): Persisted {
   }
 }
 
+const isUrl = (s: string) => /^https?:/i.test(s)
+
 export function useBarcodeMatcher(): MatcherApi {
   const { t } = useLang()
   const [state, setState] = useState<Persisted>(DEFAULTS)
   const [hydrated, setHydrated] = useState(false)
-  const [shopEntries, setShopEntries] = useState<CatalogEntry[]>([])
-  const [shopInfo, setShopInfo] = useState<SourceInfo | null>(null)
-  const [shopLoading, setShopLoading] = useState(false)
+  const [sources, setSources] = useState<SourceInfo[]>([])
+  const [shopEntries, setShopEntries] = useState<Record<string, CatalogEntry[]>>({})
+  const [loadingShops, setLoadingShops] = useState<string[]>([])
+  const [registryCount, setRegistryCount] = useState<number | null>(null)
   const [lookupEntries, setLookupEntries] = useState<CatalogEntry[]>([])
   const [lookingUp, setLookingUp] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -109,82 +135,98 @@ export function useBarcodeMatcher(): MatcherApi {
     }
   }, [state, hydrated])
 
+  // Which sources this build ships is the server's business, not the bundle's.
+  useEffect(() => {
+    fetch("/api/catalog")
+      .then((r) => r.json())
+      .then((d) => setSources((d.sources ?? []) as SourceInfo[]))
+      .catch(() => setSources([]))
+  }, [])
+
   const set = useCallback((patch: Partial<Persisted>) => {
     setState((prev) => ({ ...prev, ...patch }))
   }, [])
 
-  const own = useMemo(
-    () => parseCatalogList(state.ownText, "own"),
-    [state.ownText],
-  )
+  const own = useMemo(() => parseCatalogList(state.ownText, "own"), [state.ownText])
 
-  // Priority runs left to right: a name you pasted yourself beats the shop,
-  // which beats whatever a public database guessed. A source that is switched
-  // off contributes nothing, but its entries stay in memory so switching it
-  // back on doesn't mean fetching them again.
-  const catalog = useMemo(
-    () =>
-      buildCatalog([
-        lookupEntries,
-        state.useShop ? shopEntries : [],
-        state.useOwn ? own.entries : [],
-      ]),
-    [lookupEntries, shopEntries, state.useShop, state.useOwn, own.entries],
-  )
+  // Priority runs left to right: a name you pasted yourself beats a shop, which
+  // beats whatever a registry or public database answered. A source that is
+  // switched off contributes nothing, but its entries stay in memory so
+  // switching it back on doesn't mean fetching them again.
+  const catalog = useMemo(() => {
+    const shops = state.shops.map((key) => shopEntries[key] ?? [])
+    return buildCatalog([lookupEntries, ...shops, state.useOwn ? own.entries : []])
+  }, [lookupEntries, shopEntries, state.shops, state.useOwn, own.entries])
 
   const options: FillOptions = useMemo(
-    () => ({ label: state.label.trim() || t("matcher_default_label"), mode: state.mode }),
-    [state.label, state.mode, t],
+    () => ({
+      label: state.label.trim() || t("matcher_default_label"),
+      mode: state.mode,
+      extras: state.extras.map((field) => ({
+        field,
+        label: t(`matcher_extra_${field}` as StringKey),
+      })),
+    }),
+    [state.label, state.mode, state.extras, t],
   )
 
-  const loadShop = useCallback(
-    async (refresh = false) => {
-      setShopLoading(true)
-      setError(null)
-      try {
-        const res = await fetch(
-          `/api/catalog?source=${SHOP_SOURCE}${refresh ? "&refresh=1" : ""}`,
-        )
-        const data = await res.json()
-        if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
-        setShopEntries(data.entries as CatalogEntry[])
-        setShopInfo(data.source as SourceInfo)
-      } catch (e) {
-        setError((e as Error).message)
-        throw e
-      } finally {
-        setShopLoading(false)
-      }
-    },
-    [],
-  )
-
-  const lookUp = useCallback(async (barcodes: string[]) => {
-    if (!barcodes.length) return
-    setLookingUp(true)
+  const loadShop = useCallback(async (idOrUrl: string, refresh = false) => {
+    setLoadingShops((prev) => (prev.includes(idOrUrl) ? prev : [...prev, idOrUrl]))
     setError(null)
     try {
-      const res = await fetch("/api/barcodes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ barcodes }),
-      })
+      // A pasted URL is POSTed rather than put in the query string: the server
+      // has to validate it before fetching anything either way.
+      const res = isUrl(idOrUrl)
+        ? await fetch("/api/catalog", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: idOrUrl }),
+          })
+        : await fetch(`/api/catalog?source=${idOrUrl}${refresh ? "&refresh=1" : ""}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
-      const found = (data.entries ?? []) as CatalogEntry[]
-      // Keep earlier answers: a second pass over a longer invoice shouldn't
-      // drop the names the first one found.
-      setLookupEntries((prev) => {
-        const merged = new Map(prev.map((e) => [e.barcode, e]))
-        for (const entry of found) merged.set(entry.barcode, entry)
-        return [...merged.values()]
-      })
+      setShopEntries((prev) => ({ ...prev, [idOrUrl]: (data.entries ?? []) as CatalogEntry[] }))
     } catch (e) {
       setError((e as Error).message)
+      throw e
     } finally {
-      setLookingUp(false)
+      setLoadingShops((prev) => prev.filter((k) => k !== idOrUrl))
     }
   }, [])
+
+  const lookUp = useCallback(
+    async (barcodes: string[]) => {
+      const wanted = [
+        ...(state.useRegistry ? [REGISTRY_ID] : []),
+        ...(state.autoOpen ? [OPEN_ID] : []),
+      ]
+      if (!barcodes.length || !wanted.length) return
+      setLookingUp(true)
+      setError(null)
+      try {
+        const res = await fetch("/api/barcodes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ barcodes, sources: wanted }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`)
+        const found = (data.entries ?? []) as CatalogEntry[]
+        // Keep earlier answers: a second pass over a longer invoice shouldn't
+        // drop the names the first one found.
+        setLookupEntries((prev) => {
+          const merged = new Map(prev.map((e) => [e.barcode, e]))
+          for (const entry of found) merged.set(entry.barcode, entry)
+          return [...merged.values()]
+        })
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setLookingUp(false)
+      }
+    },
+    [state.useRegistry, state.autoOpen],
+  )
 
   const importFile = useCallback(async (file: File) => {
     setError(null)
@@ -195,20 +237,39 @@ export function useBarcodeMatcher(): MatcherApi {
     })
   }, [])
 
-  // Switching the shop on — now, or in a session three days ago whose choice
-  // was remembered — is what fetches its catalog. `attempted` keeps a failure
-  // from retrying on every render; flipping the switch off clears it.
-  const attempted = useRef(false)
+  // Switching a shop on — now, or in a session three days ago whose choice was
+  // remembered — is what fetches its catalog. `attempted` keeps a failure from
+  // retrying on every render; switching the shop off clears it.
+  const attempted = useRef(new Set<string>())
   useEffect(() => {
     if (!hydrated) return
-    if (!state.useShop) {
-      attempted.current = false
-      return
+    for (const key of attempted.current) {
+      if (!state.shops.includes(key)) attempted.current.delete(key)
     }
-    if (attempted.current || shopEntries.length) return
-    attempted.current = true
-    loadShop().catch(() => set({ useShop: false }))
-  }, [hydrated, state.useShop, shopEntries.length, loadShop, set])
+    for (const key of state.shops) {
+      if (attempted.current.has(key) || shopEntries[key]) continue
+      attempted.current.add(key)
+      loadShop(key).catch(() =>
+        setState((prev) => ({ ...prev, shops: prev.shops.filter((s) => s !== key) })),
+      )
+    }
+  }, [hydrated, state.shops, shopEntries, loadShop])
+
+  // The registry index lives on the server; all the browser needs is proof it
+  // is there and how much it covers.
+  useEffect(() => {
+    if (!hydrated || !state.useRegistry || registryCount !== null) return
+    fetch(`/api/catalog?source=${REGISTRY_ID}`)
+      .then(async (r) => {
+        const d = await r.json()
+        if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`)
+        setRegistryCount(d.count as number)
+      })
+      .catch((e) => {
+        setError((e as Error).message)
+        setState((prev) => ({ ...prev, useRegistry: false }))
+      })
+  }, [hydrated, state.useRegistry, registryCount])
 
   const reset = useCallback(() => {
     setLookupEntries([])
@@ -220,9 +281,12 @@ export function useBarcodeMatcher(): MatcherApi {
     set,
     catalog,
     options,
+    sources,
     ownCount: own.entries.length,
     ownSkipped: own.skipped,
-    shop: { entries: shopEntries, info: shopInfo, loading: shopLoading },
+    shopEntries,
+    loadingShops,
+    registryCount,
     lookupCount: lookupEntries.length,
     lookingUp,
     error,
@@ -241,9 +305,45 @@ export interface MatchStats {
   hasBarcodeColumn: boolean
 }
 
-const UNMATCHED_SHOWN = 24
-/** Matches the server's per-request cap on open-database lookups. */
-const AUTO_BATCH = 200
+// ── Panel ─────────────────────────────────────────────────────────────────
+
+function SourceCard({
+  title,
+  blurb,
+  chip,
+  checked,
+  toggleLabel,
+  onToggle,
+  footer,
+}: {
+  title: React.ReactNode
+  blurb: string
+  chip?: string
+  checked: boolean
+  toggleLabel: string
+  onToggle: (on: boolean) => void
+  footer?: React.ReactNode
+}) {
+  return (
+    <div className="demo-card flex flex-col">
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-extrabold">{title}</p>
+        <input
+          type="checkbox"
+          className="mt-1 flex-shrink-0"
+          checked={checked}
+          aria-label={toggleLabel}
+          onChange={(e) => onToggle(e.target.checked)}
+        />
+      </div>
+      {chip && <p className="island-kicker mt-1">{chip}</p>}
+      <p className="demo-muted mt-1 text-sm leading-snug">{blurb}</p>
+      <div className="mt-auto pt-3 text-xs" style={{ color: "var(--ink-faint)" }}>
+        {footer}
+      </div>
+    </div>
+  )
+}
 
 export default function BarcodeMatcher({
   matcher,
@@ -254,33 +354,56 @@ export default function BarcodeMatcher({
 }) {
   const { t } = useLang()
   const [open, setOpen] = useState(false)
-  const { state, set, shop } = matcher
+  const [newShop, setNewShop] = useState("")
+  const { state, set } = matcher
 
-  // Turning the shop off shouldn't throw away a crawl that took 150 requests,
-  // so its entries stay loaded and only stop counting.
-  const activeShopEntries = state.useShop ? shop.entries.length : 0
-  const total =
-    (state.useOwn ? matcher.ownCount : 0) + activeShopEntries + matcher.lookupCount
-  const allOn = state.useOwn && state.useShop && state.autoOpen
+  const presets = matcher.sources.filter((s) => s.kind === "shop")
+  const customShops = state.shops.filter((s) => isUrl(s))
+  const shopCount = state.shops.reduce((n, key) => n + (matcher.shopEntries[key]?.length ?? 0), 0)
+  const total = (state.useOwn ? matcher.ownCount : 0) + shopCount + matcher.lookupCount
 
-  // Every code we've already sent to the open databases. Without it an unknown
+  const allOn =
+    state.useOwn &&
+    state.useRegistry &&
+    state.autoOpen &&
+    presets.every((p) => state.shops.includes(p.id))
+
+  const setAll = (on: boolean) =>
+    set({
+      useOwn: on,
+      useRegistry: on,
+      autoOpen: on,
+      // Pasted shops are kept either way: they were added deliberately.
+      shops: on ? [...new Set([...state.shops, ...presets.map((p) => p.id)])] : customShops,
+    })
+
+  const toggleShop = (id: string, on: boolean) =>
+    set({ shops: on ? [...state.shops, id] : state.shops.filter((s) => s !== id) })
+
+  const addShop = () => {
+    const url = newShop.trim()
+    if (!url) return
+    const normalized = /^https?:/i.test(url) ? url : `https://${url}`
+    if (!state.shops.includes(normalized)) set({ shops: [...state.shops, normalized] })
+    setNewShop("")
+  }
+
+  // Every code already sent to a per-barcode source. Without it an unknown
   // barcode comes back unnamed, stays unmatched, and asks to be looked up
   // again — forever.
   const tried = useRef(new Set<string>())
-  // Wait for the shop catalog before asking a third party about codes the shop
-  // is about to name for free. A failed crawl switches its source off, so this
-  // can't wait forever.
-  const shopPending = state.useShop && !shop.entries.length
+  const perCodeOn = state.useRegistry || state.autoOpen
+  // Wait for the shop catalogs before asking a registry about codes a shop is
+  // about to name. A failed crawl drops the shop, so this can't wait forever.
+  const shopsPending = state.shops.some((key) => !matcher.shopEntries[key])
   useEffect(() => {
-    if (!state.enabled || !state.autoOpen || matcher.lookingUp || shopPending) return
+    if (!state.enabled || !perCodeOn || matcher.lookingUp || shopsPending) return
     const fresh = stats.unmatched.filter((code) => !tried.current.has(code))
     if (!fresh.length) return
-    // The server takes 200 per request; the rest go on the next pass, once
-    // this one has finished.
     const batch = fresh.slice(0, AUTO_BATCH)
     for (const code of batch) tried.current.add(code)
     matcher.lookUp(batch)
-  }, [state.enabled, state.autoOpen, stats.unmatched, matcher.lookingUp, matcher.lookUp, shopPending])
+  }, [state.enabled, perCodeOn, stats.unmatched, matcher.lookingUp, matcher.lookUp, shopsPending])
 
   return (
     <section className="demo-panel rise-in mt-6">
@@ -334,6 +457,9 @@ export default function BarcodeMatcher({
                 {t("matcher_unmatched", { n: stats.unmatched.length })}
               </button>
             )}
+            {matcher.lookingUp && (
+              <span className="demo-muted text-xs">{t("matcher_looking_up")}</span>
+            )}
           </>
         )}
         <span className="demo-muted ml-auto text-xs">
@@ -356,132 +482,181 @@ export default function BarcodeMatcher({
       {/* sources */}
       <div className="mt-5 mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="demo-section-title">{t("matcher_sources")}</p>
-        {/* One switch for all three. They stay individually switchable because
-            a name from a crowd-sourced database is not the same claim as one
-            from your own list — but "use everything" is the common case. */}
+        {/* One switch for all of them. They stay individually switchable
+            because a name from a crowd-sourced database is not the same claim
+            as one from your own list — but "use everything" is the common case. */}
         <label className="flex items-center gap-2 text-xs font-semibold">
           <input
             type="checkbox"
             checked={allOn}
             aria-label={t("matcher_all")}
-            onChange={(e) =>
-              set({
-                useOwn: e.target.checked,
-                useShop: e.target.checked,
-                autoOpen: e.target.checked,
-              })
-            }
+            onChange={(e) => setAll(e.target.checked)}
           />
           {t("matcher_all")}
         </label>
       </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="demo-card flex flex-col">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-extrabold">{t("matcher_own")}</p>
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={state.useOwn}
-              aria-label={t("matcher_own_toggle")}
-              onChange={(e) => set({ useOwn: e.target.checked })}
-            />
-          </div>
-          <p className="demo-muted mt-1 text-sm leading-snug">{t("matcher_own_blurb")}</p>
-          <p className="mt-auto pt-3 text-xs" style={{ color: "var(--ink-faint)" }}>
-            {t(matcher.ownCount === 1 ? "matcher_own_count_one" : "matcher_own_count_many", {
-              n: matcher.ownCount,
-            })}
-            {matcher.ownSkipped > 0
-              ? ` · ${t(
-                  matcher.ownSkipped === 1
-                    ? "matcher_own_skipped_one"
-                    : "matcher_own_skipped_many",
-                  { n: matcher.ownSkipped },
-                )}`
-              : ""}
-          </p>
-        </div>
 
-        <div className="demo-card flex flex-col">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-extrabold">Nature &amp; Nurture</p>
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={state.useShop}
-              aria-label={t("matcher_shop_toggle")}
-              onChange={(e) => set({ useShop: e.target.checked })}
-            />
-          </div>
-          <p className="demo-muted mt-1 text-sm leading-snug">{t("matcher_shop_blurb")}</p>
-          <div className="mt-auto flex items-center gap-2 pt-3 text-xs">
-            <a
-              href={shop.info?.site ?? "https://shop.naturenurture.com.tr"}
-              target="_blank"
-              rel="noreferrer"
-              className="font-semibold"
-              style={{ color: "var(--ink-faint)" }}
-            >
-              shop.naturenurture.com.tr
-            </a>
-            {state.useShop && (
-              <button
-                type="button"
-                onClick={() => matcher.loadShop(true).catch(() => {})}
-                disabled={shop.loading}
-                className="ml-auto inline-flex items-center gap-1 font-semibold"
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <SourceCard
+          title={t("matcher_own")}
+          blurb={t("matcher_own_blurb")}
+          checked={state.useOwn}
+          toggleLabel={t("matcher_own_toggle")}
+          onToggle={(on) => set({ useOwn: on })}
+          footer={
+            <>
+              {t(matcher.ownCount === 1 ? "matcher_own_count_one" : "matcher_own_count_many", {
+                n: matcher.ownCount,
+              })}
+              {matcher.ownSkipped > 0
+                ? ` · ${t(
+                    matcher.ownSkipped === 1
+                      ? "matcher_own_skipped_one"
+                      : "matcher_own_skipped_many",
+                    { n: matcher.ownSkipped },
+                  )}`
+                : ""}
+            </>
+          }
+        />
+
+        <SourceCard
+          title="TİTCK"
+          chip={t("matcher_sector_pharmacy")}
+          blurb={t("matcher_registry_blurb")}
+          checked={state.useRegistry}
+          toggleLabel={t("matcher_registry_toggle")}
+          onToggle={(on) => set({ useRegistry: on })}
+          footer={
+            <div className="flex items-center gap-2">
+              <a
+                href="https://www.titck.gov.tr/dinamikmodul/43"
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold"
                 style={{ color: "var(--ink-faint)" }}
               >
-                <IconRefresh size={12} />
-                {shop.loading ? t("matcher_loading") : t("matcher_refresh")}
-              </button>
-            )}
-          </div>
-          {activeShopEntries > 0 && (
-            <p className="mt-1 text-xs" style={{ color: "var(--ink-faint)" }}>
-              {t("matcher_shop_count", { n: activeShopEntries })}
-            </p>
-          )}
-        </div>
+                titck.gov.tr
+              </a>
+              {state.useRegistry && (
+                <span className="ml-auto">
+                  {matcher.registryCount === null
+                    ? t("matcher_loading")
+                    : t("matcher_registry_count", { n: matcher.registryCount })}
+                </span>
+              )}
+            </div>
+          }
+        />
 
-        <div className="demo-card flex flex-col">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-extrabold">{t("matcher_open")}</p>
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={state.autoOpen}
-              aria-label={t("matcher_open_toggle")}
-              onChange={(e) => set({ autoOpen: e.target.checked })}
-            />
-          </div>
-          <p className="demo-muted mt-1 text-sm leading-snug">
-            {state.autoOpen ? t("matcher_open_auto") : t("matcher_open_blurb")}
-          </p>
-          <button
-            type="button"
-            className="demo-button demo-button-secondary mt-3 !px-3.5 !py-1.5 text-xs"
-            disabled={matcher.lookingUp || stats.unmatched.length === 0}
-            onClick={() => matcher.lookUp(stats.unmatched)}
-          >
-            <IconSearch size={13} />
-            {matcher.lookingUp
-              ? t("matcher_looking_up")
-              : t(
+        <SourceCard
+          title={t("matcher_open")}
+          blurb={state.autoOpen ? t("matcher_open_auto") : t("matcher_open_blurb")}
+          checked={state.autoOpen}
+          toggleLabel={t("matcher_open_toggle")}
+          onToggle={(on) => set({ autoOpen: on })}
+          footer={
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="demo-button demo-button-secondary !px-3 !py-1 text-xs"
+                disabled={matcher.lookingUp || stats.unmatched.length === 0 || !perCodeOn}
+                onClick={() => matcher.lookUp(stats.unmatched.slice(0, AUTO_BATCH))}
+              >
+                <IconSearch size={12} />
+                {t(
                   stats.unmatched.length === 1 ? "matcher_look_up_one" : "matcher_look_up_many",
                   { n: stats.unmatched.length },
                 )}
-          </button>
-          {matcher.lookupCount > 0 && (
-            <p className="mt-2 text-xs" style={{ color: "var(--ink-faint)" }}>
-              {t(
-                matcher.lookupCount === 1 ? "matcher_open_count_one" : "matcher_open_count_many",
-                { n: matcher.lookupCount },
+              </button>
+              {matcher.lookupCount > 0 && (
+                <span className="ml-auto">
+                  {t(
+                    matcher.lookupCount === 1
+                      ? "matcher_open_count_one"
+                      : "matcher_open_count_many",
+                    { n: matcher.lookupCount },
+                  )}
+                </span>
               )}
-            </p>
-          )}
-        </div>
+            </div>
+          }
+        />
+
+        {[...presets.map((p) => ({ ...p })), ...customShops.map(customSource)].map((shop) => {
+          const key = shop.id === "custom" ? shop.site : shop.id
+          const on = state.shops.includes(key)
+          const loading = matcher.loadingShops.includes(key)
+          const count = matcher.shopEntries[key]?.length ?? 0
+          return (
+            <SourceCard
+              key={key}
+              title={shop.label}
+              chip={shop.sector ? t(`matcher_sector_${shop.sector}` as StringKey) : undefined}
+              blurb={t("matcher_shop_blurb", { site: hostOf(shop.site) })}
+              checked={on}
+              toggleLabel={t("matcher_shop_toggle", { name: shop.label })}
+              onToggle={(next) => toggleShop(key, next)}
+              footer={
+                <div className="flex items-center gap-2">
+                  <a
+                    href={shop.site}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-semibold"
+                    style={{ color: "var(--ink-faint)" }}
+                  >
+                    {hostOf(shop.site)}
+                  </a>
+                  {on && (
+                    <button
+                      type="button"
+                      onClick={() => matcher.loadShop(key, true).catch(() => {})}
+                      disabled={loading}
+                      className="ml-auto inline-flex flex-shrink-0 items-center gap-1 font-semibold"
+                      style={{ color: "var(--ink-faint)" }}
+                    >
+                      <IconRefresh size={12} />
+                      {loading
+                        ? t("matcher_loading")
+                        : t("matcher_shop_count", { n: count })}
+                    </button>
+                  )}
+                </div>
+              }
+            />
+          )
+        })}
+      </div>
+
+      {/* any other shop */}
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label className="min-w-[16rem] flex-1">
+          <span className="demo-muted mb-1 block text-xs font-bold tracking-wide uppercase">
+            {t("matcher_add_shop")}
+          </span>
+          <input
+            className="demo-input"
+            placeholder="https://shop.markaniz.com.tr"
+            value={newShop}
+            onChange={(e) => setNewShop(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                addShop()
+              }
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="demo-button demo-button-secondary !py-2.5"
+          onClick={addShop}
+          disabled={!newShop.trim()}
+        >
+          {t("matcher_add")}
+        </button>
+        <p className="demo-muted w-full text-xs">{t("matcher_add_shop_hint")}</p>
       </div>
 
       {/* own list */}
@@ -554,6 +729,29 @@ export default function BarcodeMatcher({
         </label>
       </div>
 
+      {/* the rest of what a source knows */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="demo-muted text-xs font-bold tracking-wide uppercase">
+          {t("matcher_extras")}
+        </span>
+        {EXTRA_FIELDS.map((field) => (
+          <label key={field} className="flex items-center gap-1.5 text-sm">
+            <input
+              type="checkbox"
+              checked={state.extras.includes(field)}
+              onChange={(e) =>
+                set({
+                  extras: e.target.checked
+                    ? [...state.extras, field]
+                    : state.extras.filter((f) => f !== field),
+                })
+              }
+            />
+            {t(`matcher_extra_${field}` as StringKey)}
+          </label>
+        ))}
+      </div>
+
       {matcher.error && (
         <p
           className="mt-3 flex items-center gap-1.5 text-sm font-semibold"
@@ -566,3 +764,18 @@ export default function BarcodeMatcher({
     </section>
   )
 }
+
+const hostOf = (site: string) => {
+  try {
+    return new URL(site).hostname.replace(/^www\./, "")
+  } catch {
+    return site
+  }
+}
+
+const customSource = (url: string): SourceInfo => ({
+  id: "custom",
+  label: hostOf(url),
+  site: url,
+  kind: "shop",
+})
