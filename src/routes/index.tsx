@@ -11,8 +11,13 @@ import {
   IconUpload,
   IconX,
 } from "../components/icons"
+import BarcodeMatcher, {
+  type MatchStats,
+  useBarcodeMatcher,
+} from "../components/BarcodeMatcher"
 import { useLang } from "../components/lang"
 import type { StringKey } from "../lib/i18n"
+import { detectBarcodeColumn, fillNames } from "../lib/barcode"
 import { inferColumnKinds } from "../lib/cell-value"
 import {
   type CombinedColumn,
@@ -369,18 +374,50 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const showCombined = done.length > 1
   const effectiveView = showCombined ? view : (done[0]?.id ?? COMBINED_VIEW)
   const currentDoc = done.find((d) => d.id === effectiveView)
-  const currentSheets: Sheet[] = currentDoc
-    ? (currentDoc.result?.sheets ?? [])
-    : showCombined
-      ? [combinedSheet]
-      : []
+  const currentSheets: Sheet[] = useMemo(
+    () =>
+      currentDoc
+        ? (currentDoc.result?.sheets ?? [])
+        : showCombined
+          ? [combinedSheet]
+          : [],
+    [currentDoc, showCombined, combinedSheet],
+  )
+
+  // Barcode → name. The catalog fills a column into whatever is on screen; the
+  // extraction itself is never touched, so switching the matcher off — or
+  // pasting a longer list — always starts from what the model actually read.
+  const matcher = useBarcodeMatcher()
+  const fills = useMemo(
+    () => currentSheets.map((s) => fillNames(s, matcher.catalog, matcher.options)),
+    [currentSheets, matcher.catalog, matcher.options],
+  )
+  const matcherOn = matcher.state.enabled && matcher.catalog.size > 0
+  const outputSheets = useMemo(
+    () => (matcherOn ? fills.map((f) => f.sheet) : currentSheets),
+    [matcherOn, fills, currentSheets],
+  )
+  const matchStats: MatchStats = useMemo(() => {
+    const unmatched = new Set<string>()
+    let rows = 0
+    let matched = 0
+    let hasBarcodeColumn = false
+    for (const fill of fills) {
+      if (fill.barcodeColumn === -1) continue
+      hasBarcodeColumn = true
+      rows += fill.barcodeRows
+      matched += fill.matched
+      for (const code of fill.unmatched) unmatched.add(code)
+    }
+    return { rows, matched, unmatched: [...unmatched], hasBarcodeColumn }
+  }, [fills])
 
   // Sheet index is per view; keep it in range when the view changes.
   useEffect(() => {
     setActiveSheet(0)
   }, [effectiveView])
 
-  const sheet = currentSheets[Math.min(activeSheet, currentSheets.length - 1)]
+  const sheet = outputSheets[Math.min(activeSheet, outputSheets.length - 1)]
   const currentRecon = currentDoc ? reconciliations.get(currentDoc.id) : null
   const isPrimaryHere = currentDoc
     ? resolvePrimary({
@@ -390,10 +427,15 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       }) === activeSheet
     : false
 
-  const numericColumns = useMemo(
-    () => (sheet ? inferColumnKinds(sheet, PREVIEW_ROWS).map((k) => k === "number") : []),
-    [sheet],
-  )
+  // Barcodes parse as numbers but aren't figures — keep them left-aligned, the
+  // way the export keeps them text.
+  const numericColumns = useMemo(() => {
+    if (!sheet) return []
+    const barcodeAt = detectBarcodeColumn(sheet)
+    return inferColumnKinds(sheet, PREVIEW_ROWS).map(
+      (kind, i) => kind === "number" && i !== barcodeAt,
+    )
+  }, [sheet])
 
   const totalCost = done.reduce(
     (sum, d) => sum + (typeof d.result?.cost === "number" ? d.result.cost : 0),
@@ -407,7 +449,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const showPdfEngine = docs.some((d) => isPdfFile(d.file))
 
   const onDownload = async (fmt: "xlsx" | "csv" | "json") => {
-    if (!currentSheets.length) return
+    if (!outputSheets.length) return
     setBusyFmt(fmt)
     setError(null)
     try {
@@ -416,11 +458,11 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         if (!sheet) return
         downloadBlob(
           new Blob([toCsv(sheet)], { type: "text/csv;charset=utf-8" }),
-          `${base}${currentSheets.length > 1 ? `-${stem(sheet.name)}` : ""}.csv`,
+          `${base}${outputSheets.length > 1 ? `-${stem(sheet.name)}` : ""}.csv`,
         )
       } else if (fmt === "json") {
         downloadBlob(
-          new Blob([JSON.stringify({ sheets: currentSheets }, null, 2)], {
+          new Blob([JSON.stringify({ sheets: outputSheets }, null, 2)], {
             type: "application/json",
           }),
           `${base}.json`,
@@ -429,7 +471,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         const res = await fetch("/api/xlsx", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sheets: currentSheets, filename: base }),
+          body: JSON.stringify({ sheets: outputSheets, filename: base }),
         })
         if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`)
         downloadBlob(await res.blob(), `${base}.xlsx`)
@@ -705,6 +747,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
         </div>
       </section>
 
+      {/* barcode → name */}
+      {done.length > 0 && <BarcodeMatcher matcher={matcher} stats={matchStats} />}
+
       {/* results */}
       {done.length > 0 && sheet && (
         <section className="demo-panel rise-in mt-6">
@@ -774,10 +819,10 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
 
           {/* One sheet needs no tabs — in the combined view that would just
               repeat the "Combined" pill from the view switcher above. */}
-          {(currentSheets.length > 1 || effectiveView === COMBINED_VIEW) && (
+          {(outputSheets.length > 1 || effectiveView === COMBINED_VIEW) && (
             <div className="mb-4 flex flex-wrap items-center gap-2">
-              {currentSheets.length > 1 &&
-                currentSheets.map((s, i) => (
+              {outputSheets.length > 1 &&
+                outputSheets.map((s, i) => (
                   <button
                     key={`${s.name}-${i}`}
                     type="button"
@@ -791,7 +836,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
               {/* Which of this document's tables feeds the combined sheet.
                   The automatic pick is the largest table, which is right for an
                   invoice but wrong when a document holds two real tables. */}
-              {currentDoc && showCombined && currentSheets.length > 1 && (
+              {currentDoc && showCombined && outputSheets.length > 1 && (
                 <button
                   type="button"
                   onClick={() => setPrimary((prev) => ({ ...prev, [currentDoc.id]: activeSheet }))}
@@ -887,7 +932,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             {sheet.rows.length > PREVIEW_ROWS
               ? t("rows_truncated", { n: PREVIEW_ROWS, total: sheet.rows.length })
               : t(sheet.rows.length === 1 ? "rows_one" : "rows_many", { n: sheet.rows.length })}
-            {currentSheets.length > 1 && t("csv_note")}
+            {outputSheets.length > 1 && t("csv_note")}
           </p>
 
           <div className="mt-5 flex flex-wrap gap-2.5">
