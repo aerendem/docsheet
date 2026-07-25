@@ -10,6 +10,8 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiBarcodesRouteImport } from './routes/api/barcodes'
+import { Route as ApiCatalogRouteImport } from './routes/api/catalog'
 import { Route as ApiExtractRouteImport } from './routes/api/extract'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiLoginRouteImport } from './routes/api/login'
@@ -20,6 +22,16 @@ import { Route as ApiXlsxRouteImport } from './routes/api/xlsx'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBarcodesRoute = ApiBarcodesRouteImport.update({
+  id: '/api/barcodes',
+  path: '/api/barcodes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCatalogRoute = ApiCatalogRouteImport.update({
+  id: '/api/catalog',
+  path: '/api/catalog',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiExtractRoute = ApiExtractRouteImport.update({
@@ -55,6 +67,8 @@ const ApiXlsxRoute = ApiXlsxRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/barcodes': typeof ApiBarcodesRoute
+  '/api/catalog': typeof ApiCatalogRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
   '/api/login': typeof ApiLoginRoute
@@ -64,6 +78,8 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/barcodes': typeof ApiBarcodesRoute
+  '/api/catalog': typeof ApiCatalogRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
   '/api/login': typeof ApiLoginRoute
@@ -74,6 +90,8 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/barcodes': typeof ApiBarcodesRoute
+  '/api/catalog': typeof ApiCatalogRoute
   '/api/extract': typeof ApiExtractRoute
   '/api/health': typeof ApiHealthRoute
   '/api/login': typeof ApiLoginRoute
@@ -85,6 +103,8 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api/barcodes'
+    | '/api/catalog'
     | '/api/extract'
     | '/api/health'
     | '/api/login'
@@ -94,6 +114,8 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/api/barcodes'
+    | '/api/catalog'
     | '/api/extract'
     | '/api/health'
     | '/api/login'
@@ -103,6 +125,8 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/api/barcodes'
+    | '/api/catalog'
     | '/api/extract'
     | '/api/health'
     | '/api/login'
@@ -113,6 +137,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiBarcodesRoute: typeof ApiBarcodesRoute
+  ApiCatalogRoute: typeof ApiCatalogRoute
   ApiExtractRoute: typeof ApiExtractRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiLoginRoute: typeof ApiLoginRoute
@@ -128,6 +154,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/barcodes': {
+      id: '/api/barcodes'
+      path: '/api/barcodes'
+      fullPath: '/api/barcodes'
+      preLoaderRoute: typeof ApiBarcodesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/catalog': {
+      id: '/api/catalog'
+      path: '/api/catalog'
+      fullPath: '/api/catalog'
+      preLoaderRoute: typeof ApiCatalogRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/extract': {
@@ -177,6 +217,8 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiBarcodesRoute: ApiBarcodesRoute,
+  ApiCatalogRoute: ApiCatalogRoute,
   ApiExtractRoute: ApiExtractRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiLoginRoute: ApiLoginRoute,

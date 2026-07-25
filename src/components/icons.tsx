@@ -112,6 +112,33 @@ export function IconColumns(props: IconProps) {
   )
 }
 
+export function IconBarcode(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h1.5M17.5 3.5H19A1.5 1.5 0 0 1 20.5 5v1.5M20.5 17.5V19a1.5 1.5 0 0 1-1.5 1.5h-1.5M6.5 20.5H5A1.5 1.5 0 0 1 3.5 19v-1.5" />
+      <path d="M7 8v8M10.5 8v8M14 8v8M17 8v8" />
+    </Svg>
+  )
+}
+
+export function IconSearch(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </Svg>
+  )
+}
+
+export function IconRefresh(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M20 12a8 8 0 1 1-2.5-5.8" />
+      <path d="M20 4v4h-4" />
+    </Svg>
+  )
+}
+
 export function IconGitHub({ size = 20, className }: IconProps) {
   return (
     <svg

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { Workbook } from "exceljs"
+import { detectBarcodeColumn } from "../../lib/barcode"
 import {
   decimalPlaces,
   inferColumnKinds,
@@ -78,6 +79,10 @@ export const Route = createFileRoute("/api/xlsx")({
           // Write figures and dates as real values, not text. Otherwise every
           // cell arrives as a string and SUM over a price column returns 0.
           const kinds = inferColumnKinds(sheet)
+          // A barcode is an identifier, not a figure. Written as a number it
+          // loses any leading zero and Excel renders it 8.697.742.122.934.
+          const barcodeAt = detectBarcodeColumn(sheet)
+          if (barcodeAt !== -1) kinds[barcodeAt] = "text"
           const formats = kinds.map((kind, ci) =>
             kind === "number" ? numberFormatFor(sheet, ci) : DATE_FORMAT,
           )
