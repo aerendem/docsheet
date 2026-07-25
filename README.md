@@ -41,6 +41,14 @@ across UPC-A / EAN-13 / GTIN-14 forms, so a leading zero either way still hits.
 | **Nature & Nurture** | Every product published on [shop.naturenurture.com.tr](https://shop.naturenurture.com.tr), read from the shop's own `schema.org` product data and cached on the server. |
 | **Open databases** | [Open Food Facts](https://world.openfoodfacts.org) and [Open Beauty Facts](https://world.openbeautyfacts.org) — free, worldwide, no key. Only the codes nothing else could name are looked up. |
 
+**Use all sources** switches on all three at once — which is the common case —
+and every source stays individually switchable, because a name from a
+crowd-sourced database isn't the same claim as one from your own list. They
+merge into a single catalog in that priority order, so the source you trust
+most wins any disagreement. With the open databases on, the codes the other two
+can't name are looked up automatically; a code that comes back unknown is never
+asked about twice.
+
 Names can either go into **a new column** (heading of your choice) or **fill the
 blanks** in the item column the document already has — an existing name is never
 overwritten. The matcher never edits the extraction itself: switch it off and

@@ -34,7 +34,10 @@ interface Persisted {
   mode: FillMode
   label: string
   ownText: string
+  useOwn: boolean
   useShop: boolean
+  /** Look codes up in the open databases without being asked each time. */
+  autoOpen: boolean
 }
 
 const DEFAULTS: Persisted = {
@@ -42,7 +45,9 @@ const DEFAULTS: Persisted = {
   mode: "new",
   label: "",
   ownText: "",
+  useOwn: true,
   useShop: false,
+  autoOpen: false,
 }
 
 interface SourceInfo {
@@ -118,8 +123,13 @@ export function useBarcodeMatcher(): MatcherApi {
   // off contributes nothing, but its entries stay in memory so switching it
   // back on doesn't mean fetching them again.
   const catalog = useMemo(
-    () => buildCatalog([lookupEntries, state.useShop ? shopEntries : [], own.entries]),
-    [lookupEntries, shopEntries, state.useShop, own.entries],
+    () =>
+      buildCatalog([
+        lookupEntries,
+        state.useShop ? shopEntries : [],
+        state.useOwn ? own.entries : [],
+      ]),
+    [lookupEntries, shopEntries, state.useShop, state.useOwn, own.entries],
   )
 
   const options: FillOptions = useMemo(
@@ -232,6 +242,8 @@ export interface MatchStats {
 }
 
 const UNMATCHED_SHOWN = 24
+/** Matches the server's per-request cap on open-database lookups. */
+const AUTO_BATCH = 200
 
 export default function BarcodeMatcher({
   matcher,
@@ -247,7 +259,28 @@ export default function BarcodeMatcher({
   // Turning the shop off shouldn't throw away a crawl that took 150 requests,
   // so its entries stay loaded and only stop counting.
   const activeShopEntries = state.useShop ? shop.entries.length : 0
-  const total = matcher.ownCount + activeShopEntries + matcher.lookupCount
+  const total =
+    (state.useOwn ? matcher.ownCount : 0) + activeShopEntries + matcher.lookupCount
+  const allOn = state.useOwn && state.useShop && state.autoOpen
+
+  // Every code we've already sent to the open databases. Without it an unknown
+  // barcode comes back unnamed, stays unmatched, and asks to be looked up
+  // again — forever.
+  const tried = useRef(new Set<string>())
+  // Wait for the shop catalog before asking a third party about codes the shop
+  // is about to name for free. A failed crawl switches its source off, so this
+  // can't wait forever.
+  const shopPending = state.useShop && !shop.entries.length
+  useEffect(() => {
+    if (!state.enabled || !state.autoOpen || matcher.lookingUp || shopPending) return
+    const fresh = stats.unmatched.filter((code) => !tried.current.has(code))
+    if (!fresh.length) return
+    // The server takes 200 per request; the rest go on the next pass, once
+    // this one has finished.
+    const batch = fresh.slice(0, AUTO_BATCH)
+    for (const code of batch) tried.current.add(code)
+    matcher.lookUp(batch)
+  }, [state.enabled, state.autoOpen, stats.unmatched, matcher.lookingUp, matcher.lookUp, shopPending])
 
   return (
     <section className="demo-panel rise-in mt-6">
@@ -304,7 +337,7 @@ export default function BarcodeMatcher({
           </>
         )}
         <span className="demo-muted ml-auto text-xs">
-          {t("matcher_catalog_size", { n: total })}
+          {t(total === 1 ? "matcher_catalog_size_one" : "matcher_catalog_size_many", { n: total })}
         </span>
       </div>
 
@@ -321,14 +354,52 @@ export default function BarcodeMatcher({
       )}
 
       {/* sources */}
-      <p className="demo-section-title mt-5 mb-2">{t("matcher_sources")}</p>
+      <div className="mt-5 mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="demo-section-title">{t("matcher_sources")}</p>
+        {/* One switch for all three. They stay individually switchable because
+            a name from a crowd-sourced database is not the same claim as one
+            from your own list — but "use everything" is the common case. */}
+        <label className="flex items-center gap-2 text-xs font-semibold">
+          <input
+            type="checkbox"
+            checked={allOn}
+            aria-label={t("matcher_all")}
+            onChange={(e) =>
+              set({
+                useOwn: e.target.checked,
+                useShop: e.target.checked,
+                autoOpen: e.target.checked,
+              })
+            }
+          />
+          {t("matcher_all")}
+        </label>
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="demo-card flex flex-col">
-          <p className="font-extrabold">{t("matcher_own")}</p>
+          <div className="flex items-start justify-between gap-2">
+            <p className="font-extrabold">{t("matcher_own")}</p>
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={state.useOwn}
+              aria-label={t("matcher_own_toggle")}
+              onChange={(e) => set({ useOwn: e.target.checked })}
+            />
+          </div>
           <p className="demo-muted mt-1 text-sm leading-snug">{t("matcher_own_blurb")}</p>
           <p className="mt-auto pt-3 text-xs" style={{ color: "var(--ink-faint)" }}>
-            {t("matcher_own_count", { n: matcher.ownCount })}
-            {matcher.ownSkipped > 0 ? ` · ${t("matcher_own_skipped", { n: matcher.ownSkipped })}` : ""}
+            {t(matcher.ownCount === 1 ? "matcher_own_count_one" : "matcher_own_count_many", {
+              n: matcher.ownCount,
+            })}
+            {matcher.ownSkipped > 0
+              ? ` · ${t(
+                  matcher.ownSkipped === 1
+                    ? "matcher_own_skipped_one"
+                    : "matcher_own_skipped_many",
+                  { n: matcher.ownSkipped },
+                )}`
+              : ""}
           </p>
         </div>
 
@@ -375,8 +446,19 @@ export default function BarcodeMatcher({
         </div>
 
         <div className="demo-card flex flex-col">
-          <p className="font-extrabold">{t("matcher_open")}</p>
-          <p className="demo-muted mt-1 text-sm leading-snug">{t("matcher_open_blurb")}</p>
+          <div className="flex items-start justify-between gap-2">
+            <p className="font-extrabold">{t("matcher_open")}</p>
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={state.autoOpen}
+              aria-label={t("matcher_open_toggle")}
+              onChange={(e) => set({ autoOpen: e.target.checked })}
+            />
+          </div>
+          <p className="demo-muted mt-1 text-sm leading-snug">
+            {state.autoOpen ? t("matcher_open_auto") : t("matcher_open_blurb")}
+          </p>
           <button
             type="button"
             className="demo-button demo-button-secondary mt-3 !px-3.5 !py-1.5 text-xs"
@@ -386,11 +468,17 @@ export default function BarcodeMatcher({
             <IconSearch size={13} />
             {matcher.lookingUp
               ? t("matcher_looking_up")
-              : t("matcher_look_up", { n: stats.unmatched.length })}
+              : t(
+                  stats.unmatched.length === 1 ? "matcher_look_up_one" : "matcher_look_up_many",
+                  { n: stats.unmatched.length },
+                )}
           </button>
           {matcher.lookupCount > 0 && (
             <p className="mt-2 text-xs" style={{ color: "var(--ink-faint)" }}>
-              {t("matcher_open_count", { n: matcher.lookupCount })}
+              {t(
+                matcher.lookupCount === 1 ? "matcher_open_count_one" : "matcher_open_count_many",
+                { n: matcher.lookupCount },
+              )}
             </p>
           )}
         </div>
