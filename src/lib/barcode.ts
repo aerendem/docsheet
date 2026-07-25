@@ -18,7 +18,16 @@ export interface CatalogEntry {
   source: string
   /** List price, when the source publishes one. */
   price?: string
+  /** Manufacturer or brand — the drug registry and most shops publish one. */
+  brand?: string
+  /** Whatever else the source classifies the product by (ATC code, category). */
+  note?: string
 }
+
+/** Catalog fields that can be spilled into their own column beside the name. */
+export type ExtraField = "brand" | "price" | "note"
+
+export const EXTRA_FIELDS: ExtraField[] = ["brand", "price", "note"]
 
 /** Lookup table keyed by every equivalent form of a barcode. */
 export type Catalog = Map<string, CatalogEntry>
@@ -231,6 +240,8 @@ export interface FillOptions {
   label: string
   /** "new" appends a column; "fill" completes blanks in the name column. */
   mode: FillMode
+  /** Extra catalog fields to spill into their own columns, with their headings. */
+  extras?: Array<{ field: ExtraField; label: string }>
 }
 
 export interface FillResult {
@@ -271,6 +282,13 @@ export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): Fi
   while (columns.length < width) columns.push("")
   if (!inPlace) columns.push(label)
 
+  // Extras always get their own column: there is nothing in the document to
+  // fill for a manufacturer or a list price.
+  const extras = (opts.extras ?? []).map((extra) => {
+    columns.push(extra.label)
+    return { field: extra.field, at: columns.length - 1 }
+  })
+
   const unmatched = new Set<string>()
   let barcodeRows = 0
   let matched = 0
@@ -291,6 +309,7 @@ export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): Fi
     matched++
     // In place, an existing name is the document's own — only blanks are filled.
     if (!inPlace || !out[target].trim()) out[target] = hit.name
+    for (const extra of extras) out[extra.at] = hit[extra.field] ?? ""
     return out
   })
 
