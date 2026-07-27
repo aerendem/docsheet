@@ -69,8 +69,17 @@ could name, and never for the same unknown code twice.
 
 Most Turkish shop platforms (Ticimax, T-Soft, IdeaSoft, WooCommerce) publish
 each product's EAN in `schema.org` JSON-LD, which is what "any other shop"
-relies on. A shop that puts an internal stock code there instead is ignored
-rather than trusted: only real GTIN-length codes are indexed.
+relies on. The code is read wherever the platform puts it — at the top level, in
+the `@graph` Yoast wraps a page in, or under `mainEntity` — and from whichever
+of `gtin13` / `gtin` / `ean` / `sku` actually holds a code, since a shop that
+prints an empty `gtin13` beside a filled `gtin` is common. A shop that puts an
+internal stock code there instead is ignored rather than trusted: only real
+GTIN-length codes are indexed.
+
+The server only ever fetches public `https` addresses, and checks **every
+redirect hop**, not just the URL you paste — otherwise a shop could answer with
+a redirect and have the server read something inside the network it sits in.
+Responses are capped, so a hostile or broken site can't exhaust its memory.
 
 **Every source is on by default** — the common case is wanting names, not
 picking suppliers — and switching one off is what sticks, per browser. Each is
@@ -173,7 +182,7 @@ npm run type-check   # tsc --noEmit
 | `REQUEST_TIMEOUT_MS` | | `240000` | OpenRouter request timeout |
 | `OPENROUTER_BASE_URL` | | `https://openrouter.ai/api/v1` | |
 | `APP_PUBLIC_URL` | | `https://github.com` | Sent as `HTTP-Referer` to OpenRouter |
-| `APP_PASSWORD` | | — | Set it to put the app behind a shared password |
+| `APP_PASSWORD` | | — | Set it to put the app behind a shared password. Guessing is limited to 10 tries per address per 5 minutes |
 | `CATALOG_TTL_MINUTES` | | `720` | How long a fetched shop catalog is cached |
 | `CATALOG_MAX_PRODUCTS` | | `500` | Cap on product pages read per shop crawl |
 | `CATALOG_TIMEOUT_MS` | | `20000` | Per-request timeout for catalog fetches |
