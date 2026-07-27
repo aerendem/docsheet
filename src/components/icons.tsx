@@ -112,6 +112,24 @@ export function IconColumns(props: IconProps) {
   )
 }
 
+export function IconArrowUp(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </Svg>
+  )
+}
+
+export function IconArrowDown(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 5v14" />
+      <path d="m5 12 7 7 7-7" />
+    </Svg>
+  )
+}
+
 export function IconBarcode(props: IconProps) {
   return (
     <Svg {...props}>

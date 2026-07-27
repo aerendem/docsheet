@@ -323,6 +323,8 @@ export interface MatchStats {
   matched: number
   unmatched: string[]
   hasBarcodeColumn: boolean
+  /** Barcode cells whose misread letters were read back as digits. */
+  repaired: number
 }
 
 // ── Panel ─────────────────────────────────────────────────────────────────
@@ -501,6 +503,15 @@ export default function BarcodeMatcher({
               <span className="demo-muted text-xs">{t("matcher_looking_up")}</span>
             )}
           </>
+        )}
+        {/* A correction to what was read, not a match — worth saying out loud
+            even with the matcher switched off, since it changed the document. */}
+        {stats.repaired > 0 && (
+          <span className="demo-muted text-xs">
+            {t(stats.repaired === 1 ? "matcher_repaired_one" : "matcher_repaired_many", {
+              n: stats.repaired,
+            })}
+          </span>
         )}
         <span className="demo-muted ml-auto text-xs">
           {t(total === 1 ? "matcher_catalog_size_one" : "matcher_catalog_size_many", { n: total })}

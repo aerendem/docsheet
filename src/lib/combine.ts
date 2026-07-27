@@ -46,22 +46,107 @@ export function normalizeHeader(header: string): string {
   )
 }
 
+/**
+ * Turkish glues its possessive and plural straight onto the noun, so the same
+ * column is headed "Miktar" on one invoice and "Miktarı" on the next, and
+ * "Birim Fiyat" is printed "Birim Fiyatı" far more often than not.
+ * normalizeHeader has already folded those endings to ASCII, so the set is
+ * small enough to spell out; the English plural rides along with it.
+ */
+const HEADER_SUFFIX = "(?:leri|lari|ler|lar|si|su|i|u|s)?"
+
+/**
+ * A heading matcher for a list of base terms, tolerant of those endings.
+ * Alternatives are tried in order, so a term goes before any term it starts
+ * with — "stok kod" has to win over "kod" for the match length to be the real
+ * one. `exact` anchors the end, for a term that must not swallow a longer
+ * heading: "Birim" is the unit column, "Birim Fiyat" is not.
+ */
+function headerMatcher(terms: string[], exact = false): RegExp {
+  return new RegExp(`^(?:${terms.join("|")})${HEADER_SUFFIX}${exact ? "$" : "\\b"}`)
+}
+
+/** Shared with the barcode matcher, which looks for the same two columns. */
+export const BARCODE_HEADER = headerMatcher([
+  "barkod",
+  "barcode",
+  "karekod",
+  "gtin",
+  "ean",
+  "upc",
+])
+export const ITEM_HEADER = headerMatcher([
+  "mal hizmet cins",
+  "mal hizmet",
+  "malzeme ad",
+  "urun ad",
+  "urun ism",
+  "urun cins",
+  "stok ad",
+  "ilac ad",
+  "ticari ad",
+  "aciklama",
+  "description",
+  "malzeme",
+  "product",
+  "urun",
+  "hizmet",
+  "name",
+  "item",
+  "cins",
+])
+
 /** Common invoice headings, Turkish and English, mapped to one identity. */
 const SYNONYMS: Array<{ key: string; label: string; match: RegExp }> = [
-  { key: "barcode", label: "Barcode", match: /^(barkod|barcode|gtin|ean)\b/ },
-  { key: "code", label: "Code", match: /^(stok kodu|urun kodu|malzeme kodu|sku|kod|code|ref|reference)\b/ },
+  { key: "barcode", label: "Barcode", match: BARCODE_HEADER },
   {
-    key: "item",
-    label: "Item",
-    match: /^(mal hizmet|urun adi|urun|malzeme adi|malzeme|aciklama|description|item|product|hizmet)\b/,
+    key: "code",
+    label: "Code",
+    match: headerMatcher([
+      "malzeme kod",
+      "urun kod",
+      "stok kod",
+      "reference",
+      "code",
+      "sku",
+      "kod",
+      "ref",
+    ]),
   },
-  { key: "quantity", label: "Quantity", match: /^(miktar|adet|quantity|qty)\b/ },
-  { key: "unit", label: "Unit", match: /^(birim|unit|olcu)\b$/ },
-  { key: "unit_price", label: "Unit price", match: /^(birim fiyat|unit price|price|fiyat)\b/ },
-  { key: "discount", label: "Discount", match: /^(iskonto|indirim|discount)\b/ },
-  { key: "vat", label: "VAT", match: /^(kdv|vat|tax|vergi)\b/ },
-  { key: "amount", label: "Amount", match: /^(mal hizmet tutari|tutar|line total|total|amount)\b/ },
-  { key: "date", label: "Date", match: /^(tarih|date)\b/ },
+  { key: "item", label: "Item", match: ITEM_HEADER },
+  { key: "quantity", label: "Quantity", match: headerMatcher(["miktar", "adet", "aded", "quantity", "qty"]) },
+  { key: "unit", label: "Unit", match: headerMatcher(["olcu birim", "birim", "unit", "olcu"], true) },
+  {
+    key: "unit_price",
+    label: "Unit price",
+    match: headerMatcher([
+      "birim fiyat",
+      "bir fiyat",
+      "br fiyat",
+      "b fiyat",
+      "unit price",
+      "fiyat",
+      "price",
+    ]),
+  },
+  { key: "discount", label: "Discount", match: headerMatcher(["iskonto", "indirim", "discount"]) },
+  { key: "vat", label: "VAT", match: headerMatcher(["kdv", "vat", "tax", "vergi"]) },
+  {
+    key: "amount",
+    label: "Amount",
+    match: headerMatcher([
+      "mal hizmet tutar",
+      "genel toplam",
+      "ara toplam",
+      "net tutar",
+      "line total",
+      "toplam",
+      "amount",
+      "tutar",
+      "total",
+    ]),
+  },
+  { key: "date", label: "Date", match: headerMatcher(["tarih", "date"]) },
 ]
 
 /**

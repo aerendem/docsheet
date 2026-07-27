@@ -33,8 +33,23 @@ readable product name. The **Barcode → name** panel fills that column in by
 matching the barcode column against a catalog.
 
 The barcode column is found by its heading (`Barkod`, `Barcode`, `GTIN`, `EAN`,
-`UPC`) or, when it hasn't got one, by the shape of its values. Codes are matched
-across UPC-A / EAN-13 / GTIN-14 forms, so a leading zero either way still hits.
+`UPC` — with or without a Turkish suffix, so `Barkodu` counts) or, when it hasn't
+got one, by the shape of its values. Codes are matched across UPC-A / EAN-13 /
+GTIN-14 forms, so a leading zero either way still hits.
+
+### Misread digits
+
+Barcode digits are printed small and condensed, so OCR hands back `B` for `8`,
+`O` for `0`, `I` for `1`. Dropping those letters would shorten the code by
+exactly the digits that were misread — leaving a plausible code that names the
+wrong product, or nothing at all — so each letter is read back as the digit it
+was printed as.
+
+A cell is only **rewritten** when the repaired code satisfies the GTIN check
+digit, which proves the letters were digits. Anything weaker is looked up
+repaired but left in the sheet exactly as it was read, and the panel says how
+many cells were corrected. Uploaded spreadsheets get the same treatment: a sheet
+that was itself typed up from a scan carries the same misreads.
 
 ### Sources
 
@@ -89,6 +104,33 @@ column: manufacturer, list price, ATC code / category.
 
 The matcher never edits the extraction itself: switch it off and the sheets go
 back to exactly what the model read.
+
+## Your layout
+
+Whatever the supplier called a column, the **Your layout** sheet (**Combined**,
+once there is more than one document) gives it one identity: `Birim Fiyatı`,
+`Birim Fiyat` and `Unit price` are the same column, and Turkish possessive and
+plural endings — `Miktarı`, `Tutarı`, `Barkodu` — read as the noun. Two suppliers
+spelling a heading differently stack into one column instead of two half-empty
+ones.
+
+Under **Columns** you rename, reorder and switch off columns. The layout is
+remembered per browser, so the order the program you paste into expects is set
+up once rather than redone by hand on every invoice — and it applies to a single
+invoice, not just a batch.
+
+## Typed cells
+
+Figures and dates are written to `.xlsx` as real numbers and real dates, not
+text — a stock program importing a text price reads no price at all. A column
+takes a type when most of its values agree on one, so a single `9,90 TL/AD` in a
+price column no longer leaves every price beside it as text; that one cell keeps
+its own text. Codes are never figures: a barcode column, and any column holding a
+zero-padded value, stays text so its leading zeros survive.
+
+CSV follows the language it is downloaded in — semicolon-delimited under **TR**,
+because Turkish Excel splits on semicolons and a comma-separated file would open
+as one column per row.
 
 ## Quality tiers
 
@@ -156,8 +198,8 @@ npm run type-check   # tsc --noEmit
 
 The app also exposes plain HTTP endpoints (see `src/routes/api/`):
 
-- `POST /api/extract` — `multipart/form-data` with `file`, `tier`, optional `model`, `pdfEngine` → `{ sheets, model, ... }`
-- `POST /api/sheet` — `multipart/form-data` with `file` (.xlsx/.xlsm/.csv/.tsv) → `{ sheets }`, no model call
+- `POST /api/extract` — `multipart/form-data` with `file`, `tier`, optional `model`, `pdfEngine` → `{ sheets, model, repairedBarcodes, ... }`
+- `POST /api/sheet` — `multipart/form-data` with `file` (.xlsx/.xlsm/.csv/.tsv) → `{ sheets, repairedBarcodes }`, no model call
 - `POST /api/xlsx` — JSON `{ sheets, filename }` → `.xlsx` download
 - `GET  /api/catalog` — the barcode sources this build knows
 - `GET  /api/catalog?source=procsin` — `{ count, entries: [{ barcode, name, brand, price }] }` (add `&refresh=1` to bypass the cache)

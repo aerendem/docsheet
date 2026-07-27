@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { Workbook } from "exceljs"
 import { detectBarcodeColumn } from "../../lib/barcode"
 import {
   decimalPlaces,
@@ -9,6 +8,7 @@ import {
 } from "../../lib/cell-value"
 import type { Sheet } from "../../lib/tiers"
 import { isAuthed } from "../../server/auth"
+import { loadWorkbook } from "../../server/node"
 
 const DATE_FORMAT = "dd.mm.yyyy"
 
@@ -52,6 +52,7 @@ export const Route = createFileRoute("/api/xlsx")({
         const sheets = Array.isArray(body?.sheets) ? body.sheets : []
         const base = sanitizeFilename(body?.filename ?? "export")
 
+        const Workbook = await loadWorkbook()
         const wb = new Workbook()
         wb.creator = "docsheet"
         const used = new Set<string>()

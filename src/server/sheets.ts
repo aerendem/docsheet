@@ -5,7 +5,9 @@
 // So a .xlsx or .csv doesn't need the OCR pipeline at all: it is parsed here and
 // enters the app exactly as an extraction would — no model call, no cost.
 
+import { repairSheets } from "../lib/barcode"
 import type { Sheet } from "../lib/tiers"
+import { loadWorkbook } from "./node"
 
 /** A spreadsheet with more rows than this is almost certainly not an invoice. */
 const MAX_ROWS = Number(20_000)
@@ -145,7 +147,7 @@ function cellText(cell: any): string {
 }
 
 async function parseWorkbook(bytes: ArrayBuffer): Promise<Sheet[]> {
-  const { Workbook } = await import("exceljs")
+  const Workbook = await loadWorkbook()
   const workbook = new Workbook()
   try {
     await workbook.xlsx.load(bytes as any)
@@ -176,13 +178,19 @@ async function parseWorkbook(bytes: ArrayBuffer): Promise<Sheet[]> {
   return sheets
 }
 
-/** Parse an uploaded spreadsheet into the same shape an extraction returns. */
+/**
+ * Parse an uploaded spreadsheet into the same shape an extraction returns.
+ *
+ * Barcodes get the same repair an extraction does: a sheet that was itself
+ * typed up from a scan carries the same misread letters, and a code with a
+ * letter in it matches nothing whichever door it came in through.
+ */
 export async function readSpreadsheet(
   name: string,
   bytes: ArrayBuffer,
-): Promise<{ sheets: Sheet[] }> {
-  if (isCsvName(name)) {
-    return { sheets: parseDelimited(new TextDecoder("utf-8").decode(bytes)) }
-  }
-  return { sheets: await parseWorkbook(bytes) }
+): Promise<{ sheets: Sheet[]; repairedBarcodes: number }> {
+  const sheets = isCsvName(name)
+    ? parseDelimited(new TextDecoder("utf-8").decode(bytes))
+    : await parseWorkbook(bytes)
+  return repairSheets(sheets)
 }

@@ -2,6 +2,7 @@
 // into clean spreadsheet "sheets". Never import this from client code — it reads
 // process.env and uses Buffer.
 
+import { repairSheets } from "../lib/barcode"
 import { DEFAULT_PDF_ENGINE, modelForTier, type Sheet } from "../lib/tiers"
 import { bytesToBase64, env } from "./node"
 import { hasTextLayer } from "./pdf-text-layer"
@@ -63,6 +64,8 @@ export interface OcrResult {
   /** USD actually billed by OpenRouter, summed over every call this run made. */
   cost?: number
   engineUsed?: string
+  /** Barcode cells whose OCR'd letters were read back as digits. */
+  repairedBarcodes?: number
 }
 
 /** OpenRouter reports `usage.cost` in USD when usage accounting is enabled. */
@@ -135,7 +138,18 @@ async function callModel(
   return { sheets: normalizeSheets(text), usage: body?.usage, cost: costOf(body?.usage) }
 }
 
+/**
+ * Extract, then put the barcode column back the way the pack prints it. A
+ * printed 8 comes back as B often enough that the codes are unusable
+ * otherwise — and a code one digit short matches nothing, so the whole matcher
+ * silently gives up on the invoice.
+ */
 export async function runOcr(file: OcrInput, opts: OcrOptions): Promise<OcrResult> {
+  const result = await extract(file, opts)
+  return { ...result, ...repairSheets(result.sheets) }
+}
+
+async function extract(file: OcrInput, opts: OcrOptions): Promise<OcrResult> {
   const apiKey = (env.OPENROUTER_API_KEY ?? "").trim()
   if (!apiKey) {
     throw new OcrError(500, "OPENROUTER_API_KEY is not configured on the server.")

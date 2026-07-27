@@ -13,7 +13,7 @@ import type { CatalogEntry } from "../lib/barcode"
 import { normalizeBarcode } from "../lib/barcode"
 import { normalizeHeader } from "../lib/combine"
 import { CatalogError, type CatalogSourceInfo, getBytes, getText } from "./catalog"
-import { env } from "./node"
+import { env, loadWorkbook } from "./node"
 
 const TTL_MS = Number(env.REGISTRY_TTL_MINUTES ?? 1440) * 60_000
 const LIST_PAGE = (
@@ -123,9 +123,9 @@ function readSheet(sheet: any, index: Map<string, CatalogEntry>): number {
 async function buildIndex(): Promise<CachedRegistry> {
   const file = await newestWorkbookUrl()
   const bytes = await getBytes(file)
-  // exceljs is already a dependency for the .xlsx export. Imported here rather
+  // exceljs is already a dependency for the .xlsx export. Loaded here rather
   // than at module scope so a registry that is never switched on costs nothing.
-  const { Workbook } = await import("exceljs")
+  const Workbook = await loadWorkbook()
   const workbook = new Workbook()
   await workbook.xlsx.load(bytes as any)
 

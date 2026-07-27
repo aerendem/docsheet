@@ -7,7 +7,7 @@
 //
 // Everything here is pure, so the browser and the server share it.
 
-import { normalizeHeader } from "./combine"
+import { BARCODE_HEADER, ITEM_HEADER, normalizeHeader } from "./combine"
 import type { Sheet } from "./tiers"
 
 export interface CatalogEntry {
@@ -36,11 +36,63 @@ const MIN_DIGITS = 6
 const MAX_DIGITS = 14
 
 /**
+ * The letters OCR hands back in place of printed digits. Barcode digits are
+ * printed small and condensed, where 8 and B, 0 and O, 1 and I are nearly the
+ * same shape, and the model returns whichever it saw. Dropping those letters
+ * would shorten the code by exactly the digits that were misread — leaving a
+ * plausible-looking code that names the wrong product, or nothing at all — so
+ * each is read back as the digit it was printed as.
+ */
+const CONFUSABLE: Record<string, string> = {
+  O: "0", o: "0", D: "0", Q: "0",
+  I: "1", l: "1", i: "1", "|": "1", "!": "1",
+  Z: "2", z: "2",
+  A: "4",
+  S: "5", s: "5",
+  G: "6", b: "6",
+  T: "7",
+  B: "8",
+  g: "9", q: "9",
+}
+
+/** Characters a code can be printed with: digits, letters, and OCR's bars. */
+const CODE_CHARS = /[^0-9A-Za-z|!]+/
+
+/**
+ * How much of a group may be letters and still be read as a misread number.
+ * A code is digits with the odd letter in it; "B12" in a product description is
+ * a third letters and is a vitamin, not 812.
+ */
+const MISREAD_SHARE = 0.25
+
+/**
+ * The digits of a printed code. Groups split by spaces, dots or dashes are
+ * joined back up; a word carrying no digit at all (a unit, a currency) is not
+ * part of the code; and a letter standing among digits is read as the digit it
+ * was printed as.
+ */
+function readDigits(text: string): string {
+  let digits = ""
+  for (const token of text.split(CODE_CHARS)) {
+    if (!/\d/.test(token)) continue
+    let letters = 0
+    for (const ch of token) if (ch < "0" || ch > "9") letters++
+    const misread = letters / token.length <= MISREAD_SHARE
+    for (const ch of token) {
+      if (ch >= "0" && ch <= "9") digits += ch
+      else if (misread) digits += CONFUSABLE[ch] ?? ""
+    }
+  }
+  return digits
+}
+
+/**
  * Digits of a printed barcode, or null when the text isn't one.
  *
  * OCR (and Excel round-trips) hand us "8697742122934", "869 774 212 2934",
- * "8697742122934.0" and "'8697742122934". Anything that survives as 6-14 digits
- * is treated as a code; a figure with a real decimal part is not.
+ * "8697742122934.0", "'8697742122934" and "B69774212293A". Anything that
+ * survives as 6-14 digits is treated as a code; a figure with a real decimal
+ * part is not.
  */
 export function normalizeBarcode(raw: string): string | null {
   if (typeof raw !== "string") return null
@@ -50,9 +102,71 @@ export function normalizeBarcode(raw: string): string | null {
   s = s.replace(/[.,]0+$/, "")
   // Reject anything with a real decimal tail (prices, quantities).
   if (/[.,]\d*[1-9]/.test(s)) return null
-  const digits = s.replace(/\D/g, "")
+  const digits = readDigits(s)
   if (digits.length < MIN_DIGITS || digits.length > MAX_DIGITS) return null
   return digits
+}
+
+/**
+ * Whether a code satisfies the GTIN mod-10 check digit. Every real EAN-8,
+ * UPC-A, EAN-13 and GTIN-14 carries one, which is what makes a repaired code
+ * provable rather than merely plausible.
+ */
+export function hasValidCheckDigit(digits: string): boolean {
+  if (!/^\d+$/.test(digits)) return false
+  if (![8, 12, 13, 14].includes(digits.length)) return false
+  let sum = 0
+  // Weights alternate 3,1 leftwards from the digit before the check digit.
+  for (let i = digits.length - 2, weight = 3; i >= 0; i--, weight = weight === 3 ? 1 : 3) {
+    sum += Number(digits[i]) * weight
+  }
+  return (10 - (sum % 10)) % 10 === Number(digits[digits.length - 1])
+}
+
+export interface RepairResult {
+  sheet: Sheet
+  /** Cells whose letters were read back as digits. */
+  repaired: number
+}
+
+/**
+ * Put OCR's letters back as digits in the barcode column.
+ *
+ * A cell is only rewritten when reading the letters as digits produces a code
+ * whose check digit adds up — proof that the letters were digits — so a code
+ * we can't verify is left exactly as the document was read. Everything
+ * downstream (the matcher, the preview, every export) then sees the barcode
+ * the pack actually carries instead of one digit short of it.
+ */
+export function repairBarcodes(sheet: Sheet): RepairResult {
+  const at = detectBarcodeColumn(sheet)
+  if (at === -1) return { sheet, repaired: 0 }
+
+  let repaired = 0
+  const rows = sheet.rows.map((row) => {
+    const cell = row[at] ?? ""
+    if (!/[A-Za-z|!]/.test(cell)) return row
+    const digits = normalizeBarcode(cell)
+    // Same digits with the letters simply dropped: nothing was misread, the
+    // cell just carries a unit or a stray mark. Not ours to rewrite.
+    if (!digits || digits === cell.replace(/\D/g, "")) return row
+    if (!hasValidCheckDigit(digits)) return row
+    repaired++
+    const out = [...row]
+    out[at] = digits
+    return out
+  })
+
+  return repaired ? { sheet: { ...sheet, rows }, repaired } : { sheet, repaired: 0 }
+}
+
+/** Repair every sheet of a document, reporting how many cells were corrected. */
+export function repairSheets(sheets: Sheet[]): { sheets: Sheet[]; repairedBarcodes: number } {
+  const results = sheets.map(repairBarcodes)
+  return {
+    sheets: results.map((r) => r.sheet),
+    repairedBarcodes: results.reduce((n, r) => n + r.repaired, 0),
+  }
 }
 
 /**
@@ -183,10 +297,6 @@ export function parseCatalogList(text: string, source: string): ParsedList {
 
 // ── Filling a column ──────────────────────────────────────────────────────
 
-const BARCODE_HEADER = /^(barkod|barcode|gtin|ean|upc|karekod)\b/
-const NAME_HEADER =
-  /^(mal hizmet|urun adi|urun ismi|urun|malzeme adi|malzeme|aciklama|description|item|product|name)\b/
-
 /** How much of a column has to read as a barcode before we trust it. */
 const SHAPE_THRESHOLD = 0.6
 
@@ -228,7 +338,7 @@ export function detectBarcodeColumn(sheet: Sheet): number {
 /** The column a matched name should fill, when filling in place. */
 export function detectNameColumn(sheet: Sheet): number {
   for (let i = 0; i < sheet.columns.length; i++) {
-    if (NAME_HEADER.test(normalizeHeader(sheet.columns[i] ?? ""))) return i
+    if (ITEM_HEADER.test(normalizeHeader(sheet.columns[i] ?? ""))) return i
   }
   return -1
 }
