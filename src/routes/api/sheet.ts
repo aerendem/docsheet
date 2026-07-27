@@ -39,8 +39,11 @@ export const Route = createFileRoute("/api/sheet")({
             )
           }
 
-          const { sheets } = await readSpreadsheet(name, await file.arrayBuffer())
-          return Response.json({ filename: name, sheets, isSpreadsheet: true })
+          const { sheets, repairedBarcodes } = await readSpreadsheet(
+            name,
+            await file.arrayBuffer(),
+          )
+          return Response.json({ filename: name, sheets, repairedBarcodes, isSpreadsheet: true })
         } catch (err) {
           const status = err instanceof SheetError ? err.status : 500
           const message = err instanceof Error ? err.message : "Could not read that file."

@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router"
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react"
 import {
   IconAlert,
+  IconArrowDown,
+  IconArrowUp,
   IconCheck,
   IconColumns,
   IconDownload,
@@ -66,14 +68,21 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function toCsv(sheet: Sheet): string {
+/**
+ * Turkish Excel splits a CSV on semicolons, because the comma is the decimal
+ * point — a comma-separated file opens as one column per row, with every price
+ * in quotes. So the separator follows the language the sheet is being read in,
+ * which is also the convention this app's own CSV reader expects.
+ */
+function toCsv(sheet: Sheet, delimiter: string): string {
+  const needsQuotes = new RegExp(`["\\n\\r${delimiter}]`)
   const esc = (v: string) => {
     const s = String(v ?? "")
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    return needsQuotes.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const lines: string[] = []
-  if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(","))
-  for (const row of sheet.rows) lines.push(row.map(esc).join(","))
+  if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(delimiter))
+  for (const row of sheet.rows) lines.push(row.map(esc).join(delimiter))
   return "﻿" + lines.join("\r\n")
 }
 
@@ -223,7 +232,12 @@ interface DocState {
   error?: string
 }
 
-type ColumnPrefs = Record<string, { label: string; include: boolean }>
+/**
+ * Per-column layout, remembered across sessions. `order` is the position the
+ * user dragged the column to — the order the program they paste into expects,
+ * which is otherwise redone by hand on every invoice.
+ */
+type ColumnPrefs = Record<string, { label: string; include: boolean; order?: number }>
 
 function loadColumnPrefs(): ColumnPrefs {
   try {
@@ -259,7 +273,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const [pdfEngine, setPdfEngine] = useState(DEFAULT_PDF_ENGINE)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<string>(COMBINED_VIEW)
+  /** Empty means "whatever came in first" — a pill click pins the choice. */
+  const [view, setView] = useState<string>("")
   const [activeSheet, setActiveSheet] = useState(0)
   const [busyFmt, setBusyFmt] = useState<string | null>(null)
   const [columnPrefs, setColumnPrefs] = useState<ColumnPrefs>({})
@@ -298,7 +313,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const clearAll = () => {
     setDocs([])
     setError(null)
-    setView(COMBINED_VIEW)
+    setView("")
   }
 
   const patch = (id: string, next: Partial<DocState>) =>
@@ -366,13 +381,39 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   )
   const columns: CombinedColumn[] = useMemo(
     () =>
-      discovered.map((c) => ({
-        ...c,
-        label: columnPrefs[c.key]?.label ?? c.label,
-        include: columnPrefs[c.key]?.include ?? true,
-      })),
+      discovered
+        .map((c, at) => ({
+          column: {
+            ...c,
+            label: columnPrefs[c.key]?.label ?? c.label,
+            include: columnPrefs[c.key]?.include ?? true,
+          },
+          // A column this document brought that the saved layout has never
+          // seen lands after it, in the order it was discovered.
+          order: columnPrefs[c.key]?.order ?? Number.POSITIVE_INFINITY,
+          at,
+        }))
+        .sort((a, b) => a.order - b.order || a.at - b.at)
+        .map((entry) => entry.column),
     [discovered, columnPrefs],
   )
+
+  /** Move a column one place up or down, and pin the whole order it lands in. */
+  const moveColumn = (key: string, delta: number) => {
+    const from = columns.findIndex((c) => c.key === key)
+    const to = from + delta
+    if (from === -1 || to < 0 || to >= columns.length) return
+    const next = [...columns]
+    next.splice(to, 0, ...next.splice(from, 1))
+    savePrefs({
+      // Merged, not replaced: a rename saved for a supplier who isn't in this
+      // batch shouldn't be forgotten because another supplier's columns moved.
+      ...columnPrefs,
+      ...Object.fromEntries(
+        next.map((c, order) => [c.key, { label: c.label, include: c.include, order }]),
+      ),
+    })
+  }
   const combinedSheet = useMemo(() => combine(extracted, columns), [extracted, columns])
 
   const reconciliations = useMemo(() => {
@@ -383,8 +424,12 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
     return map
   }, [docs])
 
-  const showCombined = done.length > 1
-  const effectiveView = showCombined ? view : (done[0]?.id ?? COMBINED_VIEW)
+  // The combined sheet is also the layout sheet: normalised headings, in the
+  // order you put them in. That is worth having for a single invoice too — it
+  // is what gets pasted into a stock program — so it is offered from the first
+  // document, with the document itself still what you land on.
+  const showCombined = done.length > 0
+  const effectiveView = view || done[0]?.id || COMBINED_VIEW
   const currentDoc = done.find((d) => d.id === effectiveView)
   const currentSheets: Sheet[] = useMemo(
     () =>
@@ -409,6 +454,16 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
     () => (matcherOn ? fills.map((f) => f.sheet) : currentSheets),
     [matcherOn, fills, currentSheets],
   )
+  // Misread codes are repaired when the document is read, so the count belongs
+  // to the documents on screen rather than to this pass of the matcher.
+  const repaired = useMemo(
+    () =>
+      (currentDoc ? [currentDoc] : done).reduce(
+        (n, d) => n + (d.result?.repairedBarcodes ?? 0),
+        0,
+      ),
+    [currentDoc, done],
+  )
   const matchStats: MatchStats = useMemo(() => {
     const unmatched = new Set<string>()
     let rows = 0
@@ -421,8 +476,8 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       matched += fill.matched
       for (const code of fill.unmatched) unmatched.add(code)
     }
-    return { rows, matched, unmatched: [...unmatched], hasBarcodeColumn }
-  }, [fills])
+    return { rows, matched, unmatched: [...unmatched], hasBarcodeColumn, repaired }
+  }, [fills, repaired])
 
   // Sheet index is per view; keep it in range when the view changes.
   useEffect(() => {
@@ -472,7 +527,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       if (fmt === "csv") {
         if (!sheet) return
         downloadBlob(
-          new Blob([toCsv(sheet)], { type: "text/csv;charset=utf-8" }),
+          new Blob([toCsv(sheet, locale === "tr-TR" ? ";" : ",")], {
+            type: "text/csv;charset=utf-8",
+          }),
           `${base}${outputSheets.length > 1 ? `-${stem(sheet.name)}` : ""}.csv`,
         )
       } else if (fmt === "json") {
@@ -781,7 +838,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                 aria-pressed={effectiveView === COMBINED_VIEW}
                 className={`demo-pill${effectiveView === COMBINED_VIEW ? " demo-pill-active" : ""}`}
               >
-                {t("combined")} · {combinedSheet.rows.length}
+                {/* With one document there is nothing to combine — the same
+                    sheet is simply your columns, in your order. */}
+                {t(done.length > 1 ? "combined" : "layout")} · {combinedSheet.rows.length}
               </button>
               {done.map((d) => (
                 <button
@@ -886,8 +945,11 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             <div className="demo-card mb-4">
               <p className="demo-section-title mb-1">{t("columns_title")}</p>
               <p className="demo-muted mb-3 text-xs">{t("columns_hint")}</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {columns.map((c) => (
+              {/* One per line, top to bottom: the list reads in the order the
+                  columns come out in, which is the point of being able to
+                  move them. */}
+              <div className="grid gap-2">
+                {columns.map((c, at) => (
                   <div key={c.key} className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -896,7 +958,11 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                       onChange={(e) =>
                         savePrefs({
                           ...columnPrefs,
-                          [c.key]: { label: c.label, include: e.target.checked },
+                          [c.key]: {
+                            label: c.label,
+                            include: e.target.checked,
+                            order: columnPrefs[c.key]?.order,
+                          },
                         })
                       }
                     />
@@ -907,10 +973,34 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
                       onChange={(e) =>
                         savePrefs({
                           ...columnPrefs,
-                          [c.key]: { label: e.target.value, include: c.include },
+                          [c.key]: {
+                            label: e.target.value,
+                            include: c.include,
+                            order: columnPrefs[c.key]?.order,
+                          },
                         })
                       }
                     />
+                    <button
+                      type="button"
+                      onClick={() => moveColumn(c.key, -1)}
+                      disabled={at === 0}
+                      aria-label={t("columns_move_up", { name: c.label })}
+                      className="flex-shrink-0 rounded p-1 disabled:opacity-30"
+                      style={{ color: "var(--ink-faint)" }}
+                    >
+                      <IconArrowUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveColumn(c.key, 1)}
+                      disabled={at === columns.length - 1}
+                      aria-label={t("columns_move_down", { name: c.label })}
+                      className="flex-shrink-0 rounded p-1 disabled:opacity-30"
+                      style={{ color: "var(--ink-faint)" }}
+                    >
+                      <IconArrowDown size={14} />
+                    </button>
                   </div>
                 ))}
               </div>

@@ -80,6 +80,8 @@ export interface ExtractResult {
   /** USD billed by OpenRouter for this extraction. Absent if it went unreported. */
   cost?: number
   engineUsed?: string
+  /** Barcode cells whose misread letters were read back as the digits printed. */
+  repairedBarcodes?: number
 }
 
 /** Costs are often fractions of a cent, so keep 4 decimals until it's real money. */

@@ -120,9 +120,23 @@ function makeDate(day: number, month: number, year: number): Date | null {
 export type ColumnKind = "number" | "date" | "text"
 
 /**
- * Classify each column by looking at every filled cell. A column is only typed
- * when ALL of its values agree, so one stray note keeps the column as text
- * rather than dropping data on export.
+ * How much of a column has to agree before the column takes that type.
+ *
+ * Unanimity is too strict for a scanned invoice: one "1.545,49 TL/AD", one
+ * "-" where a price was left blank, one note in the margin, and the whole price
+ * column stays text — which exports as text, and a stock program importing that
+ * spreadsheet reads a text price as no price at all. Cells that don't parse are
+ * still written as their own text, so nothing is lost by typing the rest.
+ */
+const TYPED_SHARE = 0.75
+
+/** A figure never starts with a leading zero: "007" is an identifier. */
+const LEADING_ZERO = /^0\d/
+
+/**
+ * Classify each column by looking at every filled cell. A column takes a type
+ * when the values that agree on it outweigh the ones that don't; a column
+ * holding any padded code stays text, so its zeros survive the export.
  */
 export function inferColumnKinds(sheet: Sheet, rowLimit = Number.POSITIVE_INFINITY): ColumnKind[] {
   const rows = sheet.rows.slice(0, rowLimit)
@@ -132,16 +146,22 @@ export function inferColumnKinds(sheet: Sheet, rowLimit = Number.POSITIVE_INFINI
     let filled = 0
     let numbers = 0
     let dates = 0
+    let identifier = false
     for (const row of rows) {
-      const cell = row[ci] ?? ""
-      if (!cell.trim()) continue
+      const cell = (row[ci] ?? "").trim()
+      if (!cell) continue
       filled++
       if (parseNumber(cell) !== null) numbers++
-      if (parseDateCell(cell) !== null) dates++
+      const isDate = parseDateCell(cell) !== null
+      if (isDate) dates++
+      // "05.08.2026" leads with a zero and is still a date, not a code.
+      else if (LEADING_ZERO.test(cell)) identifier = true
     }
-    if (!filled) return "text"
-    if (numbers === filled) return "number"
-    if (dates === filled) return "date"
+    if (!filled || identifier) return "text"
+    const numeric = numbers / filled
+    const dated = dates / filled
+    if (numeric >= TYPED_SHARE && numeric >= dated) return "number"
+    if (dated >= TYPED_SHARE) return "date"
     return "text"
   })
 }
