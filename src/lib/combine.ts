@@ -62,7 +62,7 @@ const HEADER_SUFFIX = "(?:leri|lari|ler|lar|si|su|i|u|s)?"
  * one. `exact` anchors the end, for a term that must not swallow a longer
  * heading: "Birim" is the unit column, "Birim Fiyat" is not.
  */
-function headerMatcher(terms: string[], exact = false): RegExp {
+export function headerMatcher(terms: string[], exact = false): RegExp {
   return new RegExp(`^(?:${terms.join("|")})${HEADER_SUFFIX}${exact ? "$" : "\\b"}`)
 }
 

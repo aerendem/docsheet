@@ -11,7 +11,7 @@
 
 import type { CatalogEntry } from "../lib/barcode"
 import { normalizeBarcode } from "../lib/barcode"
-import { normalizeHeader } from "../lib/combine"
+import { headerMatcher, normalizeHeader } from "../lib/combine"
 import { CatalogError, type CatalogSourceInfo, getBytes, getText } from "./catalog"
 import { env, loadWorkbook } from "./node"
 
@@ -28,14 +28,16 @@ export const REGISTRY_SOURCE: CatalogSourceInfo = {
   sector: "pharmacy",
 }
 
-// Headings are matched through the same normaliser the combined sheet uses.
-// A plain /i regex is not enough here: "İlaç Adı" starts with a dotted capital
-// İ, which case-insensitive matching does not fold to "i".
+// Headings are matched through the same normaliser and matcher the combined
+// sheet uses. A plain /i regex is not enough here: "İlaç Adı" starts with a
+// dotted capital İ, which case-insensitive matching does not fold to "i" — and
+// the file is republished every week, so a heading that gains a suffix or a
+// "No" must not take the whole index down with it.
 const HEADER = {
-  barcode: /^barkod$/,
-  name: /^(ilac adi|urun adi)$/,
-  firm: /^firma adi$/,
-  atc: /^atc (kodu|adi)$/,
+  barcode: headerMatcher(["barkod", "gtin", "ean"]),
+  name: headerMatcher(["ilac ad", "urun ad", "ticari ad", "urun ism"]),
+  firm: headerMatcher(["ruhsat sahibi", "firma ad", "firma", "uretici"]),
+  atc: headerMatcher(["atc kod", "atc ad", "atc"]),
 }
 
 interface CachedRegistry {

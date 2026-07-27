@@ -28,6 +28,14 @@ const MAX_PRODUCTS = Number(env.CATALOG_MAX_PRODUCTS ?? 500)
 const MAX_CHILD_SITEMAPS = 3
 const MAX_LOOKUPS = 200
 const LOOKUP_CONCURRENCY = 4
+/** Redirect hops followed before a chain is called a loop. */
+const MAX_REDIRECTS = 5
+/** A sitemap or product page this big is not one; don't buffer it. */
+const MAX_TEXT_BYTES = 8 * 1024 * 1024
+/** The drug registry workbook is the biggest thing we legitimately download. */
+const MAX_BYTES = 64 * 1024 * 1024
+/** Per-barcode answers kept in memory before the oldest are dropped. */
+const MAX_LOOKUP_CACHE = 20_000
 
 export const USER_AGENT = `docsheet/1.0 (${env.APP_PUBLIC_URL ?? "https://github.com/aerendem/docsheet"})`
 
@@ -73,18 +81,17 @@ export class CatalogError extends Error {
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────
 
-async function request(url: string, accept: string): Promise<Response> {
+async function fetchOnce(url: string, accept: string): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   try {
-    const resp = await fetch(url, {
+    return await fetch(url, {
       signal: controller.signal,
+      // Redirects are followed by hand below, so each hop can be checked.
+      redirect: "manual",
       headers: { "User-Agent": USER_AGENT, Accept: accept },
     })
-    if (!resp.ok) throw new CatalogError(502, `${url} returned HTTP ${resp.status}`)
-    return resp
   } catch (err) {
-    if (err instanceof CatalogError) throw err
     if (err instanceof Error && err.name === "AbortError") {
       throw new CatalogError(504, `Timed out fetching ${url}`)
     }
@@ -94,12 +101,84 @@ async function request(url: string, accept: string): Promise<Response> {
   }
 }
 
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308])
+
+/**
+ * Fetch a public https URL, checking every hop of the chain.
+ *
+ * `fetch` follows redirects silently, which is what turns one allowed URL into
+ * a request to whatever it points at: a shop that answers 302 to
+ * `http://169.254.169.254/…` would have the server read cloud metadata and hand
+ * it back. Following them here means the guard applies to the address actually
+ * fetched, every time.
+ */
+async function request(url: string, accept: string): Promise<Response> {
+  let target = assertFetchable(url)
+  for (let hop = 0; ; hop++) {
+    const resp = await fetchOnce(target, accept)
+    if (!REDIRECT_STATUS.has(resp.status)) {
+      if (!resp.ok) throw new CatalogError(502, `${target} returned HTTP ${resp.status}`)
+      return resp
+    }
+    if (hop >= MAX_REDIRECTS) throw new CatalogError(502, `Too many redirects from ${url}.`)
+    const location = resp.headers.get("location")
+    if (!location) throw new CatalogError(502, `${target} redirected without a location.`)
+    try {
+      target = assertFetchable(new URL(location, target).toString())
+    } catch (err) {
+      // Say where it tried to go: a shop redirecting off-limits is a fact about
+      // that shop, not a mystery failure.
+      const why = err instanceof Error ? err.message : "not allowed"
+      throw new CatalogError(400, `${target} redirected to ${location} — ${why}`)
+    }
+  }
+}
+
+/**
+ * Read a response body, refusing to buffer more than the cap. Content-Length is
+ * only a hint, so the limit is enforced against what actually arrives.
+ */
+async function readCapped(resp: Response, maxBytes: number, url: string): Promise<Uint8Array> {
+  const tooBig = () =>
+    new CatalogError(413, `${url} is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.`)
+  const declared = Number(resp.headers.get("content-length") ?? "")
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooBig()
+
+  const reader = resp.body?.getReader()
+  if (!reader) return new Uint8Array(0)
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.length
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw tooBig()
+    }
+    chunks.push(value)
+  }
+
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const chunk of chunks) {
+    out.set(chunk, at)
+    at += chunk.length
+  }
+  return out
+}
+
 export async function getText(url: string): Promise<string> {
-  return (await request(url, "text/html,application/xhtml+xml,application/xml,*/*")).text()
+  const resp = await request(url, "text/html,application/xhtml+xml,application/xml,*/*")
+  // `Response.text()` decodes as UTF-8 whatever the charset header claims, so
+  // decoding here changes nothing but the size cap.
+  return new TextDecoder("utf-8").decode(await readCapped(resp, MAX_TEXT_BYTES, url))
 }
 
 export async function getBytes(url: string): Promise<ArrayBuffer> {
-  return (await request(url, "*/*")).arrayBuffer()
+  const resp = await request(url, "*/*")
+  const bytes = await readCapped(resp, MAX_BYTES, url)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 export async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
@@ -119,20 +198,20 @@ const PRIVATE_HOST =
   /^(localhost|.*\.local|.*\.internal|\[?::1\]?|0\.0\.0\.0|10\.\d+\.\d+\.\d+|127\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|169\.254\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/i
 
 /**
- * Guard for the "point it at any shop" source. The server would otherwise
- * happily fetch a URL a user supplies, which is a request forgery hole: the
- * container can reach things the browser can't (cloud metadata, internal
- * services). Only public https hosts get through, and a redirect can't escape
- * either — each fetched URL is checked, not just the first.
+ * Guard for everything this server fetches on a user's say-so. Without it the
+ * container would happily read things the browser can't — cloud metadata,
+ * internal services — because it sits inside the network they're on.
+ *
+ * @returns the URL unchanged, so it can wrap a fetch without rewriting it.
  */
-export function assertPublicSite(raw: string): string {
+export function assertFetchable(raw: string): string {
   let url: URL
   try {
     url = new URL(raw.trim())
   } catch {
     throw new CatalogError(400, "That doesn't look like a URL.")
   }
-  if (url.protocol !== "https:") throw new CatalogError(400, "Only https shop URLs are supported.")
+  if (url.protocol !== "https:") throw new CatalogError(400, "Only https URLs are fetched.")
   const host = url.hostname
   if (PRIVATE_HOST.test(host) || !host.includes(".")) {
     throw new CatalogError(400, "That host isn't a public website.")
@@ -141,6 +220,15 @@ export function assertPublicSite(raw: string): string {
   if (/^\[?[\d.:a-f]+\]?$/i.test(host) && !/[a-z]{2}/i.test(host.replace(/^\[|\]$/g, ""))) {
     throw new CatalogError(400, "That host isn't a public website.")
   }
+  return url.toString()
+}
+
+/**
+ * The same guard for the "point it at any shop" source, which additionally
+ * reduces the URL to the site root the crawler builds paths from.
+ */
+export function assertPublicSite(raw: string): string {
+  const url = new URL(assertFetchable(raw))
   return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`
 }
 
@@ -198,11 +286,18 @@ export async function discoverProductUrls(site: string): Promise<string[]> {
     urls = expanded
   }
 
-  const sameSite = urls.filter((u) => {
+  const sameSite = urls.flatMap((u) => {
     try {
-      return new URL(u).hostname.replace(/^www\./, "") === new URL(site).hostname.replace(/^www\./, "")
+      const parsed = new URL(u)
+      if (parsed.hostname.replace(/^www\./, "") !== new URL(site).hostname.replace(/^www\./, "")) {
+        return []
+      }
+      // Some sitemaps still list http for a site served over https. It is the
+      // host we vouched for, so upgrade rather than drop the product.
+      parsed.protocol = "https:"
+      return [parsed.toString()]
     } catch {
-      return false
+      return []
     }
   })
   const products = sameSite.filter((u) => PRODUCT_PATH.test(u) && !NOT_PRODUCT.test(u))
@@ -211,8 +306,34 @@ export async function discoverProductUrls(site: string): Promise<string[]> {
   return (products.length ? products : sameSite).slice(0, MAX_PRODUCTS)
 }
 
+/** Fields a platform may print the barcode in, best first. */
+const CODE_FIELDS = ["gtin13", "gtin14", "gtin12", "gtin8", "gtin", "ean", "barcode", "sku"]
+
+/** Wrappers a Product is commonly nested inside instead of sitting at the top. */
+const LD_CHILDREN = ["@graph", "graph", "mainEntity", "item", "itemListElement", "hasVariant"]
+
 /**
- * Product pages carry one or more JSON-LD blocks. We want the one that holds a
+ * Every object in a JSON-LD block, however it is nested. Yoast (so most
+ * WooCommerce shops) publishes one `@graph` holding the whole page, and several
+ * themes hang the Product off `mainEntity` — reading only the top level finds a
+ * barcode on neither, and the shop reports "no products published a barcode".
+ */
+function ldNodes(data: unknown, depth = 0, out: Record<string, any>[] = []): Record<string, any>[] {
+  if (depth > 5 || out.length > 200 || !data || typeof data !== "object") return out
+  if (Array.isArray(data)) {
+    for (const item of data) ldNodes(item, depth + 1, out)
+    return out
+  }
+  const node = data as Record<string, any>
+  out.push(node)
+  for (const key of LD_CHILDREN) {
+    if (node[key]) ldNodes(node[key], depth + 1, out)
+  }
+  return out
+}
+
+/**
+ * Product pages carry one or more JSON-LD blocks. We want the node that holds a
  * code and a name — identified by those fields rather than by @type, because
  * some platforms emit `"type"` instead of `"@type"`.
  */
@@ -227,22 +348,33 @@ export function productFromHtml(html: string, sourceId: string): CatalogEntry | 
     } catch {
       continue
     }
-    const candidates = Array.isArray(data) ? data : [data]
-    for (const raw of candidates) {
-      if (!raw || typeof raw !== "object") continue
-      const node = raw as Record<string, any>
-      const code = normalizeBarcode(String(node.gtin13 ?? node.gtin14 ?? node.gtin ?? node.sku ?? ""))
+    for (const node of ldNodes(data)) {
       const name = typeof node.name === "string" ? node.name.trim() : ""
+      if (!name) continue
+      // Take the first field that yields a real code, not the first field that
+      // exists: platforms routinely emit `"gtin13": ""` beside a filled `gtin`.
       // A shop that puts its own stock code in `sku` would name every row
       // wrongly, so only a real GTIN length counts.
-      if (!code || code.length < 8 || !name) continue
+      let code: string | null = null
+      for (const field of CODE_FIELDS) {
+        const value = node[field]
+        if (value === undefined || value === null) continue
+        const digits = normalizeBarcode(String(value))
+        if (digits && digits.length >= 8) {
+          code = digits
+          break
+        }
+      }
+      if (!code) continue
+
       const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers
+      const price = offers?.price ?? offers?.priceSpecification?.price
       const brand = typeof node.brand === "string" ? node.brand : node.brand?.name
       return {
         barcode: code,
         name,
         source: sourceId,
-        price: offers?.price === undefined || offers?.price === null ? undefined : String(offers.price),
+        price: price === undefined || price === null ? undefined : String(price),
         brand: typeof brand === "string" && brand.trim() ? brand.trim() : undefined,
       }
     }
@@ -330,6 +462,20 @@ const OPEN_FACTS = [
 /** Misses are cached too — an unknown barcode stays unknown for a while. */
 const lookupCache = new Map<string, { entry: CatalogEntry | null; at: number }>()
 
+/**
+ * Remember an answer, dropping the oldest once the cache is full. A server that
+ * stays up for weeks would otherwise hold every barcode anyone ever pasted,
+ * misses included, with nothing to release them.
+ */
+function remember(barcode: string, entry: CatalogEntry | null) {
+  if (lookupCache.size >= MAX_LOOKUP_CACHE) {
+    // Map iterates in insertion order, so the first key is the oldest.
+    const oldest = lookupCache.keys().next()
+    if (!oldest.done) lookupCache.delete(oldest.value)
+  }
+  lookupCache.set(barcode, { entry, at: Date.now() })
+}
+
 async function lookupOne(barcode: string): Promise<CatalogEntry | null> {
   const cached = lookupCache.get(barcode)
   if (cached && Date.now() - cached.at < TTL_MS) return cached.entry
@@ -363,7 +509,7 @@ async function lookupOne(barcode: string): Promise<CatalogEntry | null> {
     }
   }
 
-  lookupCache.set(barcode, { entry, at: Date.now() })
+  remember(barcode, entry)
   return entry
 }
 
