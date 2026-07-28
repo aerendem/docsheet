@@ -2,7 +2,7 @@
 // line items add up to the total the document states, nothing was missed or
 // misread. An OCR error that changes a digit almost always breaks the sum.
 
-import { inferColumnKinds, parseNumber } from "./cell-value"
+import { inferColumnKinds, inferDecimalMarks, parseNumber } from "./cell-value"
 import type { Sheet } from "./tiers"
 
 export interface Reconciliation {
@@ -113,12 +113,13 @@ function collectColumnSums(sheets: Sheet[]): ColumnSum[] {
   for (const sheet of sheets) {
     if (sheet.rows.length < 2) continue
     const kinds = inferColumnKinds(sheet)
+    const marks = inferDecimalMarks(sheet)
     kinds.forEach((kind, ci) => {
       if (kind !== "number") return
       let sum = 0
       let filled = 0
       for (const row of sheet.rows) {
-        const value = parseNumber(row[ci] ?? "")
+        const value = parseNumber(row[ci] ?? "", marks[ci])
         if (value === null) continue
         sum += value
         filled++
