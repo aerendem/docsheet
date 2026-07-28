@@ -21,7 +21,7 @@ import BarcodeMatcher, {
 import { useLang } from "../components/lang"
 import type { StringKey } from "../lib/i18n"
 import { detectBarcodeColumn, fillNames } from "../lib/barcode"
-import { inferColumnKinds } from "../lib/cell-value"
+import { inferColumnKinds, parseNumber } from "../lib/cell-value"
 import {
   type CombinedColumn,
   combine,
@@ -80,7 +80,12 @@ function toCsv(sheet: Sheet, delimiter: string): string {
   const needsQuotes = new RegExp(`["\\n\\r${delimiter}]`)
   const esc = (v: string) => {
     const s = String(v ?? "")
-    return needsQuotes.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    // Excel evaluates a CSV field that opens with =, + or @ — a description
+    // read as "=DEVİR 2026" would arrive as #NAME? instead of as itself. The
+    // apostrophe is Excel's own "this is text" mark and isn't displayed. A
+    // leading minus is left alone: that one really is a negative figure.
+    const cell = /^[=+@]/.test(s) && parseNumber(s) === null ? `'${s}` : s
+    return needsQuotes.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell
   }
   const lines: string[] = []
   if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(delimiter))

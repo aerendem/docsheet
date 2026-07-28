@@ -104,7 +104,9 @@ stored as numbers survive (no `8.69774E+12`), dates come back as `dd.mm.yyyy`,
 and a Turkish semicolon-delimited CSV with decimal commas is detected as such.
 
 Mixed batches work too — a scanned invoice and last month's export stack into
-one combined sheet, matched together.
+one combined sheet, matched together. A figure read out of a workbook keeps the
+places its number format declares, so a price drawn as `129,50` doesn't come
+back as `129.5` and lose the column its type.
 
 ### Shelf price
 
@@ -174,6 +176,17 @@ takes a type when most of its values agree on one, so a single `9,90 TL/AD` in a
 price column no longer leaves every price beside it as text; that one cell keeps
 its own text. Codes are never figures: a barcode column, and any column holding a
 zero-padded value, stays text so its leading zeros survive.
+
+Typing a column would otherwise edit what the document said: `%10` becomes `10`
+and `82,00 TL` becomes `82`. So a unit every figure in the column shares is
+carried into the **number format** instead — the cell holds `10` and still reads
+`%10`, holds `82` and still reads `82,00 TL`. One cell disagreeing means the
+column has no shared unit and none is applied.
+
+A cell that opens with `=`, `+` or `@` is marked as text on the way into CSV,
+because Excel evaluates such a field on import and a description reading
+`=DEVİR 2026` would arrive as `#NAME?`. A leading minus is left alone — that one
+really is a negative figure — and reading a CSV back drops the mark again.
 
 CSV follows the language it is downloaded in — semicolon-delimited under **TR**,
 because Turkish Excel splits on semicolons and a comma-separated file would open

@@ -12,6 +12,42 @@ import { loadWorkbook } from "../../server/node"
 
 const DATE_FORMAT = "dd.mm.yyyy"
 
+/** The figure in a printed cell, with whatever was printed around it. */
+const AROUND = /^([^\d]*?)[\d.,\s']+(.*)$/
+/** A unit is a short mark or word: "%", "TL", "₺", "TL/AD". Not a sentence. */
+const UNIT_OK = /^[\p{L}%$€£₺¥./]{0,6}$/u
+
+/**
+ * What a column prints around its figures, when every figure agrees.
+ *
+ * Typing a column turns "%10" into 10 and "1.545,49 TL" into 1545.49 — right
+ * for the program importing it, and a silent edit to what the document said.
+ * Carried into the number format instead, the cell still holds the figure and
+ * still reads the way it was printed.
+ */
+function unitsOf(sheet: Sheet, columnIndex: number): { prefix: string; suffix: string } {
+  let prefix: string | null = null
+  let suffix: string | null = null
+  for (const row of sheet.rows) {
+    const cell = (row[columnIndex] ?? "").trim()
+    if (!cell || parseNumber(cell) === null) continue
+    // A sign belongs to the figure, not to the unit printed beside it.
+    const hit = AROUND.exec(cell.replace(/^[-+(]+/, "").replace(/\)+$/, "").trim())
+    const before = (hit?.[1] ?? "").trim()
+    const after = (hit?.[2] ?? "").trim()
+    if (prefix === null) {
+      prefix = before
+      suffix = after
+      continue
+    }
+    // One cell in the column disagreeing means there is no column-wide unit.
+    if (prefix !== before) prefix = ""
+    if (suffix !== after) suffix = ""
+  }
+  const keep = (unit: string | null) => (unit && UNIT_OK.test(unit) ? unit : "")
+  return { prefix: keep(prefix), suffix: keep(suffix) }
+}
+
 /** Match the format to how the document printed it: 340,50 keeps two places. */
 function numberFormatFor(sheet: Sheet, columnIndex: number): string {
   let places = 0
@@ -19,7 +55,9 @@ function numberFormatFor(sheet: Sheet, columnIndex: number): string {
     const cell = row[columnIndex] ?? ""
     if (cell.trim()) places = Math.max(places, decimalPlaces(cell))
   }
-  return places > 0 ? `#,##0.${"0".repeat(Math.min(places, 6))}` : "#,##0"
+  const figure = places > 0 ? `#,##0.${"0".repeat(Math.min(places, 6))}` : "#,##0"
+  const { prefix, suffix } = unitsOf(sheet, columnIndex)
+  return `${prefix ? `"${prefix}"` : ""}${figure}${suffix ? `" ${suffix}"` : ""}`
 }
 
 function sanitizeFilename(name: string): string {
