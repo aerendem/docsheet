@@ -6,6 +6,7 @@ import {
   IconArrowUp,
   IconCheck,
   IconColumns,
+  IconCopy,
   IconDownload,
   IconFile,
   IconLock,
@@ -26,6 +27,7 @@ import {
   combine,
   discoverColumns,
   type ExtractedDoc,
+  pickPrimarySheet,
   resolvePrimary,
 } from "../lib/combine"
 import { type Reconciliation, reconcile } from "../lib/reconcile"
@@ -88,6 +90,59 @@ function toCsv(sheet: Sheet, delimiter: string): string {
 
 const stem = (name: string) =>
   (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "") || "export"
+
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"))
+
+/**
+ * Put the whole sheet on the clipboard in both shapes Excel understands.
+ *
+ * Selecting the preview by hand is what makes a paste land a column out: the
+ * drag starts mid-cell, the table scrolls under it, and only the rows on screen
+ * come along. Copying here takes every row — tab-separated for a plain paste,
+ * and as a real table for Excel, where the code columns are marked as text so a
+ * 13-digit barcode stays a barcode instead of arriving as 8,69774E+12.
+ */
+async function copySheet(sheet: Sheet): Promise<void> {
+  const width = Math.max(sheet.columns.length, ...sheet.rows.map((r) => r.length), 0)
+  const kinds = inferColumnKinds(sheet)
+  const barcodeAt = detectBarcodeColumn(sheet)
+  // Figures and dates are left for Excel to read; everything else is pinned as
+  // text, which is what saves a leading zero and a long code.
+  const asText = Array.from(
+    { length: width },
+    (_, i) => i === barcodeAt || (kinds[i] !== "number" && kinds[i] !== "date"),
+  )
+
+  // A tab or a newline inside a cell is the other way a paste shifts.
+  const clean = (cell: string) => String(cell ?? "").replace(/[\t\r\n]+/g, " ")
+  const line = (cells: string[]) =>
+    Array.from({ length: width }, (_, i) => clean(cells[i] ?? "")).join("\t")
+  const htmlRow = (cells: string[], tag: "th" | "td") =>
+    `<tr>${Array.from({ length: width }, (_, i) => {
+      const style = asText[i] ? ` style="mso-number-format:'\\@'"` : ""
+      return `<${tag}${style}>${escapeHtml(clean(cells[i] ?? ""))}</${tag}>`
+    }).join("")}</tr>`
+
+  const text = [line(sheet.columns), ...sheet.rows.map(line)].join("\r\n")
+  const html = `<table>${htmlRow(sheet.columns, "th")}${sheet.rows
+    .map((row) => htmlRow(row, "td"))
+    .join("")}</table>`
+
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      }),
+    ])
+    return
+  }
+  // Older browsers get the tab-separated form, which Excel still splits into
+  // columns — it just can't be told which of them are text.
+  if (!navigator.clipboard) throw new Error("This browser won't let a page write to the clipboard.")
+  await navigator.clipboard.writeText(text)
+}
 
 const ENGINE_KEYS: Record<string, StringKey> = {
   "pdf-text": "engine_used_text",
@@ -277,6 +332,7 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const [view, setView] = useState<string>("")
   const [activeSheet, setActiveSheet] = useState(0)
   const [busyFmt, setBusyFmt] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const [columnPrefs, setColumnPrefs] = useState<ColumnPrefs>({})
   const [editingColumns, setEditingColumns] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -358,16 +414,42 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   }
 
   const done = docs.filter((d) => d.result)
-  const extracted: ExtractedDoc[] = useMemo(
+
+  // Barcode → name. The catalog fills each document's own table *before* the
+  // documents are stacked, so a matched name and its shelf price are ordinary
+  // columns in Your layout — reorderable, renamable and remembered, like every
+  // other column. Appended after the stacking they could only ever land last,
+  // which is the wrong place for whatever program the sheet is pasted into.
+  const matcher = useBarcodeMatcher()
+  const matcherOn = matcher.state.enabled && matcher.catalog.size > 0
+
+  const filled = useMemo(
     () =>
       docs
         .filter((d) => d.result)
-        .map((d) => ({
-          filename: d.file.name,
-          sheets: d.result?.sheets ?? [],
-          primaryIndex: primary[d.id],
-        })),
-    [docs, primary],
+        .map((d) => {
+          const sheets = d.result?.sheets ?? []
+          // Filled whether or not the matcher is on: with an empty catalog the
+          // fill is what reports which codes nothing knows yet, which is what
+          // asks for them to be looked up.
+          const fills = sheets.map((s) => fillNames(s, matcher.catalog, matcher.options))
+          return {
+            id: d.id,
+            filename: d.file.name,
+            fills,
+            sheets: matcherOn ? fills.map((f) => f.sheet) : sheets,
+            // Which table feeds the combined sheet is decided on the document as
+            // it was read: a filled column widens a two-column header block,
+            // which would otherwise let it outscore the line-item table.
+            primaryIndex: primary[d.id] ?? pickPrimarySheet(sheets),
+          }
+        }),
+    [docs, primary, matcherOn, matcher.catalog, matcher.options],
+  )
+
+  const extracted: ExtractedDoc[] = useMemo(
+    () => filled.map(({ filename, sheets, primaryIndex }) => ({ filename, sheets, primaryIndex })),
+    [filled],
   )
 
   const labelFor = useMemo(
@@ -431,28 +513,12 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const showCombined = done.length > 0
   const effectiveView = view || done[0]?.id || COMBINED_VIEW
   const currentDoc = done.find((d) => d.id === effectiveView)
-  const currentSheets: Sheet[] = useMemo(
-    () =>
-      currentDoc
-        ? (currentDoc.result?.sheets ?? [])
-        : showCombined
-          ? [combinedSheet]
-          : [],
-    [currentDoc, showCombined, combinedSheet],
-  )
-
-  // Barcode → name. The catalog fills a column into whatever is on screen; the
-  // extraction itself is never touched, so switching the matcher off — or
-  // pasting a longer list — always starts from what the model actually read.
-  const matcher = useBarcodeMatcher()
-  const fills = useMemo(
-    () => currentSheets.map((s) => fillNames(s, matcher.catalog, matcher.options)),
-    [currentSheets, matcher.catalog, matcher.options],
-  )
-  const matcherOn = matcher.state.enabled && matcher.catalog.size > 0
-  const outputSheets = useMemo(
-    () => (matcherOn ? fills.map((f) => f.sheet) : currentSheets),
-    [matcherOn, fills, currentSheets],
+  const currentEntry = filled.find((e) => e.id === effectiveView)
+  // The matcher never edits the extraction itself: switch it off and the
+  // document's own sheets are what shows, exactly as the model read them.
+  const outputSheets: Sheet[] = useMemo(
+    () => (currentEntry ? currentEntry.sheets : showCombined ? [combinedSheet] : []),
+    [currentEntry, showCombined, combinedSheet],
   )
   // Misread codes are repaired when the document is read, so the count belongs
   // to the documents on screen rather than to this pass of the matcher.
@@ -464,20 +530,28 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       ),
     [currentDoc, done],
   )
+  // What the panel reports is what is on screen: every table of this document,
+  // or the one table per document that the combined sheet stacks.
   const matchStats: MatchStats = useMemo(() => {
+    const shown = currentEntry
+      ? currentEntry.fills
+      : filled.map((e) => e.fills[e.primaryIndex]).filter((f) => f !== undefined)
+
     const unmatched = new Set<string>()
     let rows = 0
     let matched = 0
+    let priced = 0
     let hasBarcodeColumn = false
-    for (const fill of fills) {
+    for (const fill of shown) {
       if (fill.barcodeColumn === -1) continue
       hasBarcodeColumn = true
       rows += fill.barcodeRows
       matched += fill.matched
+      priced += fill.priced
       for (const code of fill.unmatched) unmatched.add(code)
     }
-    return { rows, matched, unmatched: [...unmatched], hasBarcodeColumn, repaired }
-  }, [fills, repaired])
+    return { rows, matched, priced, unmatched: [...unmatched], hasBarcodeColumn, repaired }
+  }, [currentEntry, filled, repaired])
 
   // Sheet index is per view; keep it in range when the view changes.
   useEffect(() => {
@@ -517,6 +591,25 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
   const showPdfEngine = docs.some((d) => isPdfFile(d.file))
   /** Nothing queued needs a model, so the tier and engine choices are noise. */
   const sheetsOnly = docs.length > 0 && docs.every((d) => isSheetFile(d.file))
+
+  // The tick goes back to the button after a moment; it says the clipboard has
+  // the sheet, not that anything is still happening.
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(timer)
+  }, [copied])
+
+  const onCopy = async () => {
+    if (!sheet) return
+    setError(null)
+    try {
+      await copySheet(sheet)
+      setCopied(true)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
 
   const onDownload = async (fmt: "xlsx" | "csv" | "json") => {
     if (!outputSheets.length) return
@@ -1042,10 +1135,10 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             {sheet.rows.length > PREVIEW_ROWS
               ? t("rows_truncated", { n: PREVIEW_ROWS, total: sheet.rows.length })
               : t(sheet.rows.length === 1 ? "rows_one" : "rows_many", { n: sheet.rows.length })}
-            {outputSheets.length > 1 && t("csv_note")}
+            {outputSheets.length > 1 && t("csv_note")} {t("copy_note")}
           </p>
 
-          <div className="mt-5 flex flex-wrap gap-2.5">
+          <div className="mt-5 flex flex-wrap items-center gap-2.5">
             <button
               type="button"
               className="demo-button"
@@ -1054,6 +1147,13 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
             >
               <IconDownload size={16} />
               {busyFmt === "xlsx" ? t("preparing") : "Excel"}
+            </button>
+            {/* Straight into an open spreadsheet, every row of it, without
+                going through a file — which is how this sheet is most often
+                actually used. */}
+            <button type="button" className="demo-button demo-button-secondary" onClick={onCopy}>
+              {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
+              {copied ? t("copied") : t("copy")}
             </button>
             <button
               type="button"

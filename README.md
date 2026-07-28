@@ -55,8 +55,8 @@ that was itself typed up from a scan carries the same misreads.
 
 | Source | Sector | Where it comes from |
 |--------|--------|---------------------|
-| **Your list** | any | Barcode + name pairs you paste or import as CSV/TSV. Remembered in the browser, and beats every other source. |
-| **TİTCK** | pharmacy | Every licensed medicine in Turkey — ~18,000 products with name, marketing-authorisation holder and ATC code — from the SKRS e-reçete list [TİTCK republishes weekly](https://www.titck.gov.tr/dinamikmodul/43). |
+| **Your list** | any | Barcode, name and shelf price, pasted or imported as CSV/TSV. Remembered in the browser, and beats every other source. |
+| **TİTCK** | pharmacy | Every licensed medicine in Turkey — ~18,000 products with name, marketing-authorisation holder and ATC code — from the SKRS e-reçete list [TİTCK republishes weekly](https://www.titck.gov.tr/dinamikmodul/43). No prices: see below. |
 | **Nature & Nurture** | beauty | Every product published on [shop.naturenurture.com.tr](https://shop.naturenurture.com.tr). |
 | **Procsin** | beauty | Every product published on [procsin.com](https://www.procsin.com). |
 | **Any other shop** | any | Paste a shop URL and the server reads that shop's own sitemap and `schema.org` product data. Public https sites only. |
@@ -85,7 +85,9 @@ Responses are capped, so a hostile or broken site can't exhaust its memory.
 picking suppliers — and switching one off is what sticks, per browser. Each is
 individually switchable because a name from a crowd-sourced database isn't the
 same claim as one from your own list; they merge into a single catalog in the
-priority order above, so the source you trust most wins any disagreement.
+priority order above, so the source you trust most wins any disagreement. A
+field that source doesn't publish is filled in from the next one down rather
+than lost — your own list can name a product the shop prices.
 
 Nothing is fetched until a sheet with barcodes turns up: converting a PDF that
 has no barcode column costs no crawls, no registry download and no lookups. A
@@ -104,12 +106,48 @@ and a Turkish semicolon-delimited CSV with decimal commas is detected as such.
 Mixed batches work too — a scanned invoice and last month's export stack into
 one combined sheet, matched together.
 
+### Shelf price
+
+A barcode and a name don't make a sheet you can use: a scan list arrives with no
+price at all, and a price typed in by hand for every line is the work the
+conversion was meant to save. So **Shelf price** is on by default, and the
+column appears whenever a source published one — a price nothing could supply
+adds no empty column to be told to ignore.
+
+Where it comes from depends on the product:
+
+- **Shops** publish it. It is read from the product page's `schema.org` offer,
+  including an offer list or an `AggregateOffer`, which is where the platforms
+  that don't put a plain `price` at the top level keep it.
+- **Medicines have no public price feed.** The list TİTCK republishes weekly
+  carries the barcode, the name, the licence holder and the ATC code — and no
+  price column at all; the detailed price list is behind a login. So the panel
+  says so rather than leaving an empty column looking like a failed match.
+- **Your own list is the answer for both.** Paste `Barkod;Ürün Adı;Fiyat` — a
+  heading row is read if there is one, and without one the code is the cell that
+  looks like a code, the name is the longest cell that isn't a figure, and only
+  a figure printed with a decimal is taken as a price (a round `2` beside a
+  product is a quantity far more often than a price, and an invented shelf price
+  is worse than none). It is remembered per browser, so a price list exported
+  from your stock program is pasted once and prices every sheet after it.
+
+However the price is printed at the source — `349`, `"349.00"`, `1.299,90 TL` —
+one figure is stored, and the sheet prints it the way the language it is being
+read in expects: `349,00` under **TR**, where Turkish Excel reads `349.00` as
+text and a stock program importing text reads no price at all.
+
 ### Where the names land
 
 Names go into **a new column** (heading of your choice) or **fill the blanks**
 in the item column the document already has — an existing name is never
 overwritten. **Also add** spills the rest of what a source knows into its own
-column: manufacturer, list price, ATC code / category.
+column: shelf price, manufacturer, ATC code / category.
+
+The catalog fills each document's own table *before* the documents are stacked,
+so a matched name and its price are ordinary columns in **Your layout** —
+reordered, renamed and switched off like any other, and remembered. Appended
+after the stacking they could only ever come out last, which is the wrong place
+for whatever program the sheet is pasted into.
 
 The matcher never edits the extraction itself: switch it off and the sheets go
 back to exactly what the model read.
@@ -140,6 +178,15 @@ zero-padded value, stays text so its leading zeros survive.
 CSV follows the language it is downloaded in — semicolon-delimited under **TR**,
 because Turkish Excel splits on semicolons and a comma-separated file would open
 as one column per row.
+
+## Copy
+
+**Copy** puts the whole sheet on the clipboard, ready to paste into a spreadsheet
+that is already open. Selecting the preview by hand is what makes a paste land a
+column out — the drag starts mid-cell, the table scrolls under it, and only the
+rows on screen come along. This takes every row, tab-separated for a plain paste
+and as a real table for Excel, with the code columns marked as text so a 13-digit
+barcode stays a barcode instead of arriving as `8,69774E+12`.
 
 ## Quality tiers
 
