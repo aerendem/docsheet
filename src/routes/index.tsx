@@ -21,6 +21,7 @@ import { useLang } from "../components/lang"
 import type { StringKey } from "../lib/i18n"
 import { detectBarcodeColumn, fillNames } from "../lib/barcode"
 import { inferColumnKinds } from "../lib/cell-value"
+import { toCsv } from "../lib/csv"
 import {
   type CombinedColumn,
   combine,
@@ -66,24 +67,6 @@ function downloadBlob(blob: Blob, filename: string) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
-}
-
-/**
- * Turkish Excel splits a CSV on semicolons, because the comma is the decimal
- * point — a comma-separated file opens as one column per row, with every price
- * in quotes. So the separator follows the language the sheet is being read in,
- * which is also the convention this app's own CSV reader expects.
- */
-function toCsv(sheet: Sheet, delimiter: string): string {
-  const needsQuotes = new RegExp(`["\\n\\r${delimiter}]`)
-  const esc = (v: string) => {
-    const s = String(v ?? "")
-    return needsQuotes.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const lines: string[] = []
-  if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(delimiter))
-  for (const row of sheet.rows) lines.push(row.map(esc).join(delimiter))
-  return "﻿" + lines.join("\r\n")
 }
 
 const stem = (name: string) =>
@@ -526,8 +509,9 @@ function App({ session, onLogout }: { session: SessionInfo; onLogout: () => void
       const base = currentDoc ? stem(currentDoc.file.name) : "combined"
       if (fmt === "csv") {
         if (!sheet) return
+        const tr = locale === "tr-TR"
         downloadBlob(
-          new Blob([toCsv(sheet, locale === "tr-TR" ? ";" : ",")], {
+          new Blob([toCsv(sheet, tr ? ";" : ",", tr ? "," : ".")], {
             type: "text/csv;charset=utf-8",
           }),
           `${base}${outputSheets.length > 1 ? `-${stem(sheet.name)}` : ""}.csv`,

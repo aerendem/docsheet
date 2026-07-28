@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { detectBarcodeColumn } from "../../lib/barcode"
 import {
-  decimalPlaces,
+  type DecimalMark,
+  columnPlaces,
   inferColumnKinds,
+  inferDecimalMarks,
   parseDateCell,
   parseNumber,
 } from "../../lib/cell-value"
@@ -12,14 +14,18 @@ import { loadWorkbook } from "../../server/node"
 
 const DATE_FORMAT = "dd.mm.yyyy"
 
-/** Match the format to how the document printed it: 340,50 keeps two places. */
-function numberFormatFor(sheet: Sheet, columnIndex: number): string {
-  let places = 0
-  for (const row of sheet.rows) {
-    const cell = row[columnIndex] ?? ""
-    if (cell.trim()) places = Math.max(places, decimalPlaces(cell))
-  }
-  return places > 0 ? `#,##0.${"0".repeat(Math.min(places, 6))}` : "#,##0"
+/**
+ * Match the format to how the document printed it: 340,50 keeps two places.
+ *
+ * No thousands separator, deliberately. Excel puts what a cell *displays* on
+ * the clipboard, and these sheets are made to be pasted into a stock program:
+ * "2.777,25" read by something that takes the dot for the decimal point is
+ * 2,78 — a wrong cost, silently — where "2777,25" is either read right or
+ * refused outright.
+ */
+function numberFormatFor(sheet: Sheet, columnIndex: number, mark?: DecimalMark): string {
+  const places = columnPlaces(sheet, columnIndex, mark)
+  return places > 0 ? `0.${"0".repeat(places)}` : "0"
 }
 
 function sanitizeFilename(name: string): string {
@@ -80,19 +86,22 @@ export const Route = createFileRoute("/api/xlsx")({
           // Write figures and dates as real values, not text. Otherwise every
           // cell arrives as a string and SUM over a price column returns 0.
           const kinds = inferColumnKinds(sheet)
+          // Each column is read under the convention its own figures agree on,
+          // so a cost printed "711,5625" is 711.5625 and not a failed parse.
+          const marks = inferDecimalMarks(sheet)
           // A barcode is an identifier, not a figure. Written as a number it
           // loses any leading zero and Excel renders it 8.697.742.122.934.
           const barcodeAt = detectBarcodeColumn(sheet)
           if (barcodeAt !== -1) kinds[barcodeAt] = "text"
           const formats = kinds.map((kind, ci) =>
-            kind === "number" ? numberFormatFor(sheet, ci) : DATE_FORMAT,
+            kind === "number" ? numberFormatFor(sheet, ci, marks[ci]) : DATE_FORMAT,
           )
 
           for (const row of sheet.rows ?? []) {
             const typed = row.map((val, ci) => {
               const text = String(val ?? "")
               if (!text.trim()) return null
-              if (kinds[ci] === "number") return parseNumber(text) ?? text
+              if (kinds[ci] === "number") return parseNumber(text, marks[ci]) ?? text
               if (kinds[ci] === "date") return parseDateCell(text) ?? text
               return text
             })

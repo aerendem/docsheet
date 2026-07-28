@@ -14,6 +14,7 @@
     "build": "vite build",
     "start": "node .output/server/index.mjs",
     "preview": "vite preview",
+    "test": "node --import ./scripts/node-resolve.mjs --test 'src/**/*.test.ts'",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

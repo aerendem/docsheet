@@ -137,7 +137,20 @@ price column no longer leaves every price beside it as text; that one cell keeps
 its own text. Codes are never figures: a barcode column, and any column holding a
 zero-padded value, stays text so its leading zeros survive.
 
-CSV follows the language it is downloaded in — semicolon-delimited under **TR**,
+**Which separator is the decimal point is decided per column, not per cell.**
+`1,250` is 1250 on an American invoice and 1,25 on a Turkish one, so alone it
+can only be guessed at — and a column of unit costs printed to three and four
+places (`837,338`, `711,5625`) is guessed wrong on nearly every row, which drops
+the whole column back to text. Read together the column says which it is: one
+cell carrying both separators settles it, and so does any tail that isn't three
+digits long, since a thousands group is always exactly three. Columns that give
+no evidence, or give both, fall back to the cell-by-cell rule.
+
+Figures are written **without a thousands separator** — `2777,25`, not
+`2.777,25`. Excel puts what a cell *displays* on the clipboard, so grouping is
+the one part of a figure the next program can take for a decimal point, turning
+a cost of 2777,25 into 2,78 silently. CSV writes figures the same way, and
+follows the language it is downloaded in — semicolon-delimited under **TR**,
 because Turkish Excel splits on semicolons and a comma-separated file would open
 as one column per row.
 
@@ -171,6 +184,7 @@ Other scripts:
 npm run build        # production build → .output/
 npm run start        # run the built server (node .output/server/index.mjs)
 npm run type-check   # tsc --noEmit
+npm test             # node's own runner, no framework — src/**/*.test.ts
 ```
 
 ## Environment variables
