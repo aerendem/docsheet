@@ -9,7 +9,7 @@
 // Everything here is pure, so the browser and the server share it.
 
 import { decimalPlaces, parseNumber } from "./cell-value"
-import { BARCODE_HEADER, headerMatcher, ITEM_HEADER, normalizeHeader } from "./combine"
+import { BARCODE_HEADER, headerKey, headerMatcher, ITEM_HEADER, normalizeHeader } from "./combine"
 import type { Sheet } from "./tiers"
 
 export interface CatalogEntry {
@@ -513,10 +513,16 @@ export function detectBarcodeColumn(sheet: Sheet): number {
   return best
 }
 
-/** The column a matched name should fill, when filling in place. */
+/**
+ * The column a matched name should fill, when filling in place.
+ *
+ * Arbitrated, not pattern-tested: "Malzeme Kodu" opens with a goods term and
+ * is a code column, and writing product names into it — or, as it went,
+ * quietly writing them nowhere at all — is the cost of not asking properly.
+ */
 export function detectNameColumn(sheet: Sheet): number {
   for (let i = 0; i < sheet.columns.length; i++) {
-    if (ITEM_HEADER.test(normalizeHeader(sheet.columns[i] ?? ""))) return i
+    if (headerKey(sheet.columns[i] ?? "") === "item") return i
   }
   return -1
 }
@@ -546,6 +552,24 @@ export interface FillResult {
   priced: number
   /** Distinct codes no source knew. */
   unmatched: string[]
+}
+
+/**
+ * A heading for an added column that no column already has.
+ *
+ * Appending "Ürün Adı" to a table that already prints "Ürün Adı" — an invoice
+ * that names its products, run through the matcher to fill the few blanks —
+ * left two columns of one name: nothing downstream can say which is which, and
+ * in the combined sheet they land as two separate columns anyway. Numbering
+ * the second says plainly that it is the added one.
+ */
+function distinctLabel(label: string, taken: string[]): string {
+  const used = new Set(taken.map((column) => normalizeHeader(column)).filter(Boolean))
+  if (!used.has(normalizeHeader(label))) return label
+  for (let n = 2; ; n++) {
+    const candidate = `${label} (${n})`
+    if (!used.has(normalizeHeader(candidate))) return candidate
+  }
 }
 
 /** What an extra field contributes to a row, printed for the sheet. */
@@ -601,14 +625,14 @@ export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): Fi
 
   const columns = [...sheet.columns]
   while (columns.length < width) columns.push("")
-  if (!inPlace) columns.push(label)
+  if (!inPlace) columns.push(distinctLabel(label, columns))
 
   // Extras always get their own column: there is nothing in the document to
   // fill for a manufacturer or a shelf price.
   const extras = (opts.extras ?? [])
     .filter((extra) => hits.some((hit) => hit && extraValue(hit, extra.field, decimal)))
     .map((extra) => {
-      columns.push(extra.label)
+      columns.push(distinctLabel(extra.label, columns))
       return { field: extra.field, at: columns.length - 1 }
     })
 
