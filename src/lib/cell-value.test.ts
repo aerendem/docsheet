@@ -7,6 +7,7 @@ import {
   decimalPlaces,
   inferColumnKinds,
   inferDecimalMarks,
+  numberFormatFor,
   parseNumber,
 } from "./cell-value.ts"
 import type { Sheet } from "./tiers.ts"
@@ -89,6 +90,60 @@ describe("the goods-in list that would not paste", () => {
     const mark = inferDecimalMarks(BOTANIK)[BIRIM_FIYAT]
     const places = Math.max(...BOTANIK.rows.map((r) => decimalPlaces(r[BIRIM_FIYAT], mark)))
     assert.equal(places, 4)
+  })
+})
+
+/**
+ * Excel copies what a cell *displays*, so anything in the number format beyond
+ * the digits is something the next program has to read past. These are the two
+ * marks that empty her Birim Fiyat column, and both have been added to this
+ * export before in the name of printing a cell the way the page printed it.
+ */
+describe("nothing but the figure reaches the number format", () => {
+  const priced = (cells: string[]): Sheet => ({
+    name: "s",
+    columns: ["Ürün", "Birim Fiyat"],
+    rows: cells.map((c, i) => [`Ürün ${i}`, c]),
+  })
+  const formatOf = (cells: string[]) => {
+    const sheet = priced(cells)
+    return numberFormatFor(sheet, 1, inferDecimalMarks(sheet)[1])
+  }
+
+  it("carries no currency, even when every figure in the column prints one", () => {
+    // "2777,2500 TL" is not a figure to anything importing it: the cell arrives
+    // empty, which is the whole bug this column exists to prevent.
+    assert.equal(formatOf(["2.777,25 TL", "837,338 TL", "711,5625 TL"]), "0.0000")
+    assert.equal(formatOf(["340,50 TL", "128,75 TL"]), "0.00")
+    assert.equal(formatOf(["₺340,50", "₺128,75"]), "0.00")
+  })
+
+  it("carries no percent sign", () => {
+    assert.equal(formatOf(["%10", "%20", "%20"]), "0")
+  })
+
+  it("carries no thousands separator", () => {
+    // "2.777,25" read by something that takes the dot for the point is 2,78.
+    for (const fmt of [
+      formatOf(["2.777,25", "1.903,25"]),
+      formatOf(["12.000,00", "1.250,00"]),
+      formatOf(["1,250.00", "12,000.00"]),
+    ]) {
+      assert.ok(!fmt.includes("#"), `${fmt} groups its digits`)
+      assert.ok(!fmt.includes(","), `${fmt} groups its digits`)
+    }
+  })
+
+  it("is only ever zeros and a point", () => {
+    for (const cells of [
+      ["2.777,25 TL", "837,338 TL"],
+      ["%10", "%20"],
+      ["1,250.00", "99.95"],
+      ["340,50", "128,75"],
+      ["12", "40"],
+    ]) {
+      assert.match(formatOf(cells), /^0(?:\.0+)?$/, `${formatOf(cells)} carries more than the figure`)
+    }
   })
 })
 
