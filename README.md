@@ -145,6 +145,10 @@ in the item column the document already has — an existing name is never
 overwritten. **Also add** spills the rest of what a source knows into its own
 column: shelf price, manufacturer, ATC code / category.
 
+A new column whose heading the table already uses is numbered — `Ürün Adı (2)`
+beside the document's own `Ürün Adı` — rather than added twice under one name,
+which leaves nothing downstream able to say which column is which.
+
 The catalog fills each document's own table *before* the documents are stacked,
 so a matched name and its price are ordinary columns in **Your layout** —
 reordered, renamed and switched off like any other, and remembered. Appended
@@ -158,10 +162,29 @@ back to exactly what the model read.
 
 Whatever the supplier called a column, the **Your layout** sheet (**Combined**,
 once there is more than one document) gives it one identity: `Birim Fiyatı`,
-`Birim Fiyat` and `Unit price` are the same column, and Turkish possessive and
-plural endings — `Miktarı`, `Tutarı`, `Barkodu` — read as the noun. Two suppliers
-spelling a heading differently stack into one column instead of two half-empty
-ones.
+`Birim Fiyat` and `Unit price` are the same column. Turkish endings read as the
+noun they are glued to, on every word of a heading rather than the last —
+`Miktarı`, `Barkodu`, and the possessive phrases an invoice is as likely to
+print, `Malın Cinsi`, `Ürünün Adı`, `Emtianın Cinsi`. Two suppliers spelling a
+heading differently stack into one column instead of two half-empty ones.
+
+The goods column answers to a long list of names, because every trade has its
+own: `Ürün Adı`, `Eşya Cinsi`, `Mal/Hizmet Cinsi`, `Emtia Cinsi`, `Stok Adı`,
+`İlaç Adı`, `Müstahzar Adı`, `Product Name`, `Goods Description`, `Article`.
+
+**A table often carries two of them** — a name and a description — and only one
+can hold the shared identity. Which one is decided by the headings themselves,
+never by the order they happen to be printed in: a supplier heading its table
+`Açıklama | Ürün Adı` and another heading it `Ürün Adı | Açıklama` used to put
+a description and a product name into the same column. The more plainly a
+heading names a product, the stronger its claim, so the free-text ones give way
+— but a document whose only goods column is `Açıklama` still gets one, because
+it is outranked only when something more name-like is there to outrank it.
+
+Deciding what a column is means weighing every kind against every other, not
+testing one pattern: `Malzeme Kodu` opens with a goods word and is a code
+column. Read as the goods column, it took the product names the matcher had
+found and quietly dropped them.
 
 Under **Columns** you rename, reorder and switch off columns. The layout is
 remembered per browser, so the order the program you paste into expects is set
