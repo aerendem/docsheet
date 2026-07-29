@@ -1,16 +1,7 @@
-// Writing a sheet out as CSV. Kept beside the other cell helpers rather than in
-// the page, because what counts as a figure has to be decided the same way here
-// as in the .xlsx export.
+// Writing a sheet out as CSV.
 
-import { detectBarcodeColumn } from "./barcode"
-import {
-  type DecimalMark,
-  columnPlaces,
-  formatFigure,
-  inferColumnKinds,
-  inferDecimalMarks,
-  parseNumber,
-} from "./cell-value"
+import type { DecimalMark } from "./cell-value"
+import { writerFor } from "./export-cells"
 import type { Sheet } from "./tiers"
 
 /**
@@ -27,28 +18,23 @@ import type { Sheet } from "./tiers"
  */
 export function toCsv(sheet: Sheet, delimiter: string, decimal: DecimalMark): string {
   const needsQuotes = new RegExp(`["\\n\\r${delimiter}]`)
-  const kinds = inferColumnKinds(sheet)
-  const marks = inferDecimalMarks(sheet)
-  // A barcode parses as a figure and is not one.
-  const barcodeAt = detectBarcodeColumn(sheet)
-  const places = kinds.map((kind, ci) =>
-    kind === "number" ? columnPlaces(sheet, ci, marks[ci]) : 0,
-  )
+  const writer = writerFor(sheet, decimal)
 
   const esc = (v: string) => {
     const s = String(v ?? "")
-    return needsQuotes.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const cell = (v: string, ci: number) => {
-    const s = String(v ?? "")
-    if (ci === barcodeAt || kinds[ci] !== "number") return esc(s)
-    const value = parseNumber(s, marks[ci])
-    // A cell its column can't read keeps its own text rather than vanishing.
-    return value === null ? esc(s) : formatFigure(value, places[ci], decimal)
+    // Excel evaluates a CSV field that opens with =, + or @ — a description
+    // read as "=DEVİR 2026" would arrive as #NAME? instead of as itself. The
+    // apostrophe is Excel's own "this is text" mark and isn't displayed; the
+    // reader drops it again. A leading minus is left alone: that one really is
+    // a negative figure.
+    const cell = /^[=+@]/.test(s) && !/^[-+]?[\d.,]+$/.test(s) ? `'${s}` : s
+    return needsQuotes.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell
   }
 
   const lines: string[] = []
   if (sheet.columns.length) lines.push(sheet.columns.map(esc).join(delimiter))
-  for (const row of sheet.rows) lines.push(row.map(cell).join(delimiter))
+  for (const row of sheet.rows) {
+    lines.push(row.map((v, ci) => esc(writer.cell(v, ci))).join(delimiter))
+  }
   return "﻿" + lines.join("\r\n")
 }

@@ -92,3 +92,42 @@ describe("the CSV a stock program has to read", () => {
     assert.equal(rows[1][1], "Darphin Seti")
   })
 })
+
+describe("a cell Excel would evaluate on import", () => {
+  const formulaish: Sheet = {
+    name: "s",
+    columns: ["Ürün Adı", "Birim Fiyat"],
+    rows: [
+      ["=DEVİR 2026", "340,50"],
+      ["+İLAVE KALEM", "128,75"],
+      ["@ETİKET", "99,90"],
+      ["-İSKONTO SATIRI", "612,40"],
+      ["Normal ürün", "78,25"],
+    ],
+  }
+  const written = toCsv(formulaish, ";", ",")
+  const raw = written.replace("﻿", "").split("\r\n")
+
+  it("marks it as text so it arrives as itself, not as #NAME?", () => {
+    assert.ok(raw[1].startsWith("'=DEVİR 2026"), raw[1])
+    assert.ok(raw[2].startsWith("'+İLAVE KALEM"), raw[2])
+    assert.ok(raw[3].startsWith("'@ETİKET"), raw[3])
+  })
+
+  it("leaves a leading minus alone — that one really is a negative figure", () => {
+    assert.ok(raw[4].startsWith("-İSKONTO SATIRI"), raw[4])
+  })
+
+  it("marks nothing that doesn't need it", () => {
+    assert.ok(raw[5].startsWith("Normal ürün"), raw[5])
+    for (const line of raw.slice(1)) {
+      assert.ok(!line.split(";")[1].startsWith("'"), `a figure was marked as text: ${line}`)
+    }
+  })
+
+  it("does not mark a signed figure, which Excel reads as a number", () => {
+    const signed: Sheet = { name: "s", columns: ["Tutar"], rows: [["+340,50"], ["+128,75"]] }
+    const out = toCsv(signed, ";", ",").replace("﻿", "").split("\r\n")
+    assert.ok(!out[1].startsWith("'"), out[1])
+  })
+})

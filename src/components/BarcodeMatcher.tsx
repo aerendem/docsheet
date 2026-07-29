@@ -34,6 +34,12 @@ import { useLang } from "./lang"
 
 const STORAGE_KEY = "docsheet.matcher.v2"
 /**
+ * Bumped when a new default is worth applying to browsers that already have
+ * saved state. Everything else they chose is kept, and the choice they make
+ * after the bump sticks — see `load`.
+ */
+const STATE_VERSION = 3
+/**
  * Shops that are on by default. The server is the authority on which presets
  * exist (GET /api/catalog); this list only decides what a first-time visitor
  * starts with, so an id that no longer ships is simply never loaded.
@@ -67,12 +73,18 @@ interface Persisted {
   /** Look codes up in the open databases without being asked each time. */
   autoOpen: boolean
   extras: ExtraField[]
+  /** Which set of defaults this state was last reconciled against. */
+  version?: number
 }
 
 // Every source is on out of the box: the common case is wanting names, not
 // picking suppliers. Switching one off is the deliberate act, and it sticks.
 // Nothing is actually fetched until a sheet with barcodes turns up — see the
 // effects at the bottom of the panel.
+//
+// The price comes along with the name because a sheet without one is a sheet
+// that has to be priced by hand, and the column only ever appears when a source
+// actually published a price — so it costs nothing to leave on.
 const DEFAULTS: Persisted = {
   enabled: true,
   mode: "new",
@@ -82,7 +94,8 @@ const DEFAULTS: Persisted = {
   shops: PRESET_SHOP_IDS,
   useRegistry: true,
   autoOpen: true,
-  extras: [],
+  extras: ["price"],
+  version: STATE_VERSION,
 }
 
 export interface MatcherApi {
@@ -93,6 +106,8 @@ export interface MatcherApi {
   sources: SourceInfo[]
   ownCount: number
   ownSkipped: number
+  /** How many of your own pairs carry a price. */
+  ownPriced: number
   /** Loaded shop catalogs, keyed by preset id or pasted URL. */
   shopEntries: Record<string, CatalogEntry[]>
   loadingShops: string[]
@@ -112,7 +127,16 @@ function load(): Persisted {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
-    return parsed && typeof parsed === "object" ? { ...DEFAULTS, ...parsed } : DEFAULTS
+    if (!parsed || typeof parsed !== "object") return DEFAULTS
+    const saved = { ...DEFAULTS, ...parsed } as Persisted
+    // A field that didn't exist when this browser last saved would otherwise
+    // keep its absent value forever, and the returning user — the one who
+    // already asked for prices — would be the only one who never sees them.
+    if ((parsed.version ?? 0) < STATE_VERSION) {
+      saved.extras = [...new Set([...saved.extras, ...DEFAULTS.extras])]
+    }
+    saved.version = STATE_VERSION
+    return saved
   } catch {
     return DEFAULTS
   }
@@ -121,7 +145,7 @@ function load(): Persisted {
 const isUrl = (s: string) => /^https?:/i.test(s)
 
 export function useBarcodeMatcher(): MatcherApi {
-  const { t } = useLang()
+  const { t, lang } = useLang()
   const [state, setState] = useState<Persisted>(DEFAULTS)
   const [hydrated, setHydrated] = useState(false)
   const [sources, setSources] = useState<SourceInfo[]>([])
@@ -188,12 +212,17 @@ export function useBarcodeMatcher(): MatcherApi {
     () => ({
       label: state.label.trim() || t("matcher_default_label"),
       mode: state.mode,
-      extras: state.extras.map((field) => ({
+      // EXTRA_FIELDS order, not the order the boxes happened to be ticked in:
+      // a layout you set up once shouldn't move because you switched the price
+      // off and back on again.
+      extras: EXTRA_FIELDS.filter((field) => state.extras.includes(field)).map((field) => ({
         field,
         label: t(`matcher_extra_${field}` as StringKey),
       })),
+      // Turkish Excel reads "349.00" as text and "349,00" as money.
+      decimal: lang === "tr" ? "," : ".",
     }),
-    [state.label, state.mode, state.extras, t],
+    [state.label, state.mode, state.extras, t, lang],
   )
 
   const loadShop = useCallback(async (idOrUrl: string, refresh = false) => {
@@ -302,6 +331,7 @@ export function useBarcodeMatcher(): MatcherApi {
     sources,
     ownCount: own.entries.length,
     ownSkipped: own.skipped,
+    ownPriced: own.priced,
     shopEntries,
     loadingShops,
     registryCount,
@@ -321,6 +351,8 @@ export interface MatchStats {
   /** Rows in the visible sheets that carry a barcode. */
   rows: number
   matched: number
+  /** Of the matched rows, how many got a shelf price. */
+  priced: number
   unmatched: string[]
   hasBarcodeColumn: boolean
   /** Barcode cells whose misread letters were read back as digits. */
@@ -380,6 +412,7 @@ export default function BarcodeMatcher({
   const { state, set } = matcher
 
   const presets = matcher.sources.filter((s) => s.kind === "shop")
+  const wantsPrice = state.enabled && state.extras.includes("price")
   const customShops = state.shops.filter((s) => isUrl(s))
   const shopCount = state.shops.reduce((n, key) => n + (matcher.shopEntries[key]?.length ?? 0), 0)
   const total = (state.useOwn ? matcher.ownCount : 0) + shopCount + matcher.lookupCount
@@ -488,6 +521,16 @@ export default function BarcodeMatcher({
               )}
               {t("matcher_matched", { matched: stats.matched, rows: stats.rows })}
             </span>
+            {/* The price is what a shelf label needs, and it is the field
+                sources are most likely not to publish — so say how many rows
+                got one rather than leaving it to be discovered in Excel. */}
+            {wantsPrice && stats.matched > 0 && (
+              <span className="demo-muted">
+                {t(stats.priced > 0 ? "matcher_priced" : "matcher_priced_none", {
+                  n: stats.priced,
+                })}
+              </span>
+            )}
             {stats.unmatched.length > 0 && (
               <button
                 type="button"
@@ -559,6 +602,9 @@ export default function BarcodeMatcher({
               {t(matcher.ownCount === 1 ? "matcher_own_count_one" : "matcher_own_count_many", {
                 n: matcher.ownCount,
               })}
+              {matcher.ownPriced > 0
+                ? ` · ${t("matcher_own_priced", { n: matcher.ownPriced })}`
+                : ""}
               {matcher.ownSkipped > 0
                 ? ` · ${t(
                     matcher.ownSkipped === 1
@@ -574,7 +620,12 @@ export default function BarcodeMatcher({
         <SourceCard
           title="TİTCK"
           chip={t("matcher_sector_pharmacy")}
-          blurb={t("matcher_registry_blurb")}
+          // The published list carries no price column at all, so say so where
+          // the price is being asked for rather than letting an empty column
+          // look like a matching failure.
+          blurb={`${t("matcher_registry_blurb")}${
+            wantsPrice ? ` ${t("matcher_registry_no_price")}` : ""
+          }`}
           checked={state.useRegistry}
           toggleLabel={t("matcher_registry_toggle")}
           onToggle={(on) => set({ useRegistry: on })}
@@ -720,7 +771,9 @@ export default function BarcodeMatcher({
             className="demo-input font-mono text-xs"
             rows={5}
             spellCheck={false}
-            placeholder={"8697742122934, Barrier Yağ 100ml\n8697742122965; Kakao Yağı 150ml"}
+            placeholder={
+              "Barkod;Ürün Adı;Etiket Fiyatı\n8697742122934;Barrier Yağ 100ml;149,90\n8697742122965;Kakao Yağı 150ml;89,50"
+            }
             value={state.ownText}
             onChange={(e) => set({ ownText: e.target.value.slice(0, MAX_LIST_CHARS) })}
           />
@@ -802,6 +855,12 @@ export default function BarcodeMatcher({
           </label>
         ))}
       </div>
+      {/* Named but unpriced is the case worth explaining: the products were
+          found, no source published what they sell for, and pasting your own
+          price list once is what fixes it for every invoice after this one. */}
+      {wantsPrice && stats.matched > 0 && stats.priced === 0 && (
+        <p className="demo-muted mt-2 text-xs">{t("matcher_price_hint")}</p>
+      )}
 
       {matcher.error && (
         <p
