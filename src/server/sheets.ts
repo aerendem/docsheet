@@ -55,6 +55,16 @@ function detectDelimiter(sample: string): string {
   return best
 }
 
+/**
+ * Drop Excel's "the rest of this is text" mark.
+ *
+ * A CSV — ours or Excel's own — carries a leading apostrophe in front of a cell
+ * that opens with =, + or @, because without it Excel evaluates the cell as a
+ * formula and a description reading "=DEVİR 2026" arrives as #NAME?. Excel
+ * hides the mark; reading the file back has to drop it, or it accumulates.
+ */
+const unquotePrefix = (cell: string) => (/^'[=+@]/.test(cell) ? cell.slice(1) : cell)
+
 function parseDelimited(text: string): Sheet[] {
   // A BOM would otherwise become part of the first heading.
   const body = text.replace(/^﻿/, "")
@@ -102,7 +112,7 @@ function parseDelimited(text: string): Sheet[] {
   const [header, ...body_] = rows
   const width = Math.min(Math.max(header.length, ...body_.map((r) => r.length), 0), MAX_COLUMNS)
   const pad = (r: string[]) =>
-    Array.from({ length: width }, (_, i) => (r[i] ?? "").trim())
+    Array.from({ length: width }, (_, i) => unquotePrefix((r[i] ?? "").trim()))
 
   return [
     {
@@ -115,6 +125,14 @@ function parseDelimited(text: string): Sheet[] {
 
 // ── XLSX ──────────────────────────────────────────────────────────────────
 
+/** Decimal places a number format declares: "#,##0.00" keeps two. */
+function formatDecimals(numFmt: unknown): number {
+  if (typeof numFmt !== "string") return 0
+  // Only the figure part matters; "0.00" inside a quoted unit is not a figure.
+  const bare = numFmt.replace(/"[^"]*"/g, "").split(";")[0]
+  return /[.,](0+)/.exec(bare)?.[1].length ?? 0
+}
+
 /**
  * What the cell shows, not what it stores. A barcode held as a number would
  * otherwise arrive as 8697742122934 in one file and 8.69774E+12 in the next,
@@ -123,6 +141,13 @@ function parseDelimited(text: string): Sheet[] {
 function cellText(cell: any): string {
   const value = cell?.value
   if (value === null || value === undefined) return ""
+  // A price written as 129.5 under a "#,##0.00" format is drawn as 129,50, and
+  // that trailing zero is the difference between a price column and a number
+  // column when the sheet is read back in.
+  if (typeof value === "number") {
+    const places = formatDecimals(cell.numFmt)
+    return places > 0 ? value.toFixed(Math.min(places, 6)) : String(value)
+  }
   if (value instanceof Date) {
     const dd = String(value.getUTCDate()).padStart(2, "0")
     const mm = String(value.getUTCMonth() + 1).padStart(2, "0")

@@ -333,6 +333,31 @@ function ldNodes(data: unknown, depth = 0, out: Record<string, any>[] = []): Rec
 }
 
 /**
+ * The price a product page publishes, wherever the platform put it.
+ *
+ * This is the shelf price the shop is selling at, which is the one thing the
+ * drug registry can't supply — so it is worth digging for. A page lists several
+ * offers (one per variant, or an `AggregateOffer` with a low and a high), and
+ * the price sits either on the offer or inside its `priceSpecification`.
+ */
+function priceOf(offers: unknown, depth = 0): string | undefined {
+  if (!offers || typeof offers !== "object" || depth > 3) return undefined
+  if (Array.isArray(offers)) {
+    for (const offer of offers) {
+      const found = priceOf(offer, depth + 1)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  const node = offers as Record<string, any>
+  for (const field of ["price", "lowPrice", "highPrice"]) {
+    const value = node[field]
+    if (value !== undefined && value !== null && String(value).trim()) return String(value)
+  }
+  return priceOf(node.priceSpecification ?? node.offers, depth + 1)
+}
+
+/**
  * Product pages carry one or more JSON-LD blocks. We want the node that holds a
  * code and a name — identified by those fields rather than by @type, because
  * some platforms emit `"type"` instead of `"@type"`.
@@ -367,14 +392,13 @@ export function productFromHtml(html: string, sourceId: string): CatalogEntry | 
       }
       if (!code) continue
 
-      const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers
-      const price = offers?.price ?? offers?.priceSpecification?.price
+      const price = priceOf(node.offers)
       const brand = typeof node.brand === "string" ? node.brand : node.brand?.name
       return {
         barcode: code,
         name,
         source: sourceId,
-        price: price === undefined || price === null ? undefined : String(price),
+        price,
         brand: typeof brand === "string" && brand.trim() ? brand.trim() : undefined,
       }
     }

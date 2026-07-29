@@ -1,13 +1,15 @@
-// Barcode → product name matching.
+// Barcode → product name and shelf price.
 //
 // Distributor invoices very often print a barcode and a price but no readable
-// product name (or a truncated one). This turns a barcode column into a name
-// column by looking each code up in a catalog: your own pasted list, a brand's
-// online shop, or the open GTIN databases.
+// product name (or a truncated one), and a scan list prints nothing but the
+// codes. This turns a barcode column into a name — and, where the source
+// publishes one, a price — by looking each code up in a catalog: your own
+// pasted list, a brand's online shop, or the open GTIN databases.
 //
 // Everything here is pure, so the browser and the server share it.
 
-import { BARCODE_HEADER, ITEM_HEADER, normalizeHeader } from "./combine"
+import { decimalPlaces, parseNumber } from "./cell-value"
+import { BARCODE_HEADER, headerMatcher, ITEM_HEADER, normalizeHeader } from "./combine"
 import type { Sheet } from "./tiers"
 
 export interface CatalogEntry {
@@ -16,7 +18,7 @@ export interface CatalogEntry {
   name: string
   /** Which source supplied it — shown in the UI so a wrong name is traceable. */
   source: string
-  /** List price, when the source publishes one. */
+  /** Shelf price, when the source publishes one. Always `normalizePrice`d. */
   price?: string
   /** Manufacturer or brand — the drug registry and most shops publish one. */
   brand?: string
@@ -27,7 +29,8 @@ export interface CatalogEntry {
 /** Catalog fields that can be spilled into their own column beside the name. */
 export type ExtraField = "brand" | "price" | "note"
 
-export const EXTRA_FIELDS: ExtraField[] = ["brand", "price", "note"]
+/** Also the order the columns come out in, whatever order they were ticked. */
+export const EXTRA_FIELDS: ExtraField[] = ["price", "brand", "note"]
 
 /** Lookup table keyed by every equivalent form of a barcode. */
 export type Catalog = Map<string, CatalogEntry>
@@ -182,6 +185,55 @@ export function barcodeKeys(digits: string): string[] {
   return [...keys]
 }
 
+// ── Prices ────────────────────────────────────────────────────────────────
+
+/**
+ * A published price as a plain figure, or undefined when the value isn't one.
+ *
+ * Every source prints it differently: a shop's JSON-LD gives `349` or
+ * `"349.00"`, a pasted price list gives `"1.299,90 TL"`. A price that reaches
+ * the sheet in the source's own convention is a price Excel reads as text —
+ * and a stock program importing a text price reads no price at all — so one
+ * canonical form is stored and the sheet decides how to print it.
+ */
+export function normalizePrice(raw: unknown): string | undefined {
+  if (raw === null || raw === undefined) return undefined
+  // A JSON number needs no separator guessing, and reading it as text would
+  // get it wrong: 12.345 published by a platform is twelve and a bit, while
+  // "12.345" printed on a page is twelve thousand.
+  const value = typeof raw === "number" ? raw : parseNumber(String(raw).trim())
+  // Zero is a platform publishing the field without filling it in.
+  if (value === null || !Number.isFinite(value) || value <= 0) return undefined
+  // Money, to two places. The printed conventions the parser accepts never
+  // carry more than two anyway — a longer tail is a thousands group.
+  return value.toFixed(2)
+}
+
+/**
+ * A stored price printed for a sheet. Turkish writes the decimal with a comma,
+ * and Turkish Excel reading "349.00" sees text — so the mark follows the
+ * language the sheet is being read in, exactly as the CSV separator does.
+ */
+export function formatPrice(price: string | undefined, decimal = "."): string {
+  return price ? price.replace(".", decimal) : ""
+}
+
+/**
+ * Fill in what the winning entry doesn't publish. Sources disagree about which
+ * fields they carry — the drug registry names every medicine in Turkey but
+ * prints no price, a shop prints a price for the handful of products it sells —
+ * so the source you trust most wins the name, and a field it leaves empty is
+ * taken from the next source down rather than lost.
+ */
+function mergeEntries(prev: CatalogEntry, next: CatalogEntry): CatalogEntry {
+  return {
+    ...next,
+    price: next.price ?? prev.price,
+    brand: next.brand ?? prev.brand,
+    note: next.note ?? prev.note,
+  }
+}
+
 /**
  * Index entries for lookup. Later entries win, so callers pass sources in
  * ascending priority — the user's own list last, since it should beat anything
@@ -193,8 +245,16 @@ export function buildCatalog(sources: CatalogEntry[][]): Catalog {
     for (const entry of entries) {
       const digits = normalizeBarcode(entry.barcode)
       if (!digits || !entry.name.trim()) continue
-      const clean: CatalogEntry = { ...entry, barcode: digits, name: entry.name.trim() }
-      for (const key of barcodeKeys(digits)) catalog.set(key, clean)
+      const clean: CatalogEntry = {
+        ...entry,
+        barcode: digits,
+        name: entry.name.trim(),
+        price: normalizePrice(entry.price),
+      }
+      for (const key of barcodeKeys(digits)) {
+        const prev = catalog.get(key)
+        catalog.set(key, prev ? mergeEntries(prev, clean) : clean)
+      }
     }
   }
   return catalog
@@ -251,48 +311,166 @@ export interface ParsedList {
   entries: CatalogEntry[]
   /** Lines that held no usable barcode/name pair — surfaced, not swallowed. */
   skipped: number
+  /** Of those entries, how many carry a price. */
+  priced: number
 }
 
 /**
- * Read a pasted or uploaded list. The barcode may be in either column and the
- * file may or may not have a header, so each line is resolved on its own: the
- * cell that looks like a code is the code, the longest remaining cell is the
- * name.
+ * Headings a list may name its columns with. Price is tested before name
+ * because "Ürün Fiyatı" starts with the word that identifies an item column,
+ * and a price landing in the name column would name every row after it.
+ */
+const LIST_HEADER = {
+  barcode: BARCODE_HEADER,
+  price: headerMatcher([
+    "etiket fiyat",
+    "satis fiyat",
+    "perakende",
+    "liste fiyat",
+    "birim fiyat",
+    "urun fiyat",
+    "kdv dahil",
+    "fiyat",
+    "price",
+    "psf",
+    "ptf",
+  ]),
+  brand: headerMatcher(["firma", "marka", "uretici", "imalatci", "brand", "manufacturer"]),
+  name: ITEM_HEADER,
+}
+
+interface ListLayout {
+  barcode: number
+  name: number
+  price: number
+  brand: number
+}
+
+/**
+ * Read a header row, when the list has one. An export from a stock program
+ * names its columns, and that naming is worth more than any guess: it is what
+ * tells a price apart from a quantity.
+ */
+function readListHeader(cells: string[]): ListLayout | null {
+  const layout: ListLayout = { barcode: -1, name: -1, price: -1, brand: -1 }
+  for (const [i, cell] of cells.entries()) {
+    // A row carrying an actual code is data, however heading-like the rest of
+    // it reads.
+    if (normalizeBarcode(cell)) return null
+    const header = normalizeHeader(cell)
+    if (!header) continue
+    if (layout.barcode === -1 && LIST_HEADER.barcode.test(header)) layout.barcode = i
+    else if (layout.price === -1 && LIST_HEADER.price.test(header)) layout.price = i
+    else if (layout.brand === -1 && LIST_HEADER.brand.test(header)) layout.brand = i
+    else if (layout.name === -1 && LIST_HEADER.name.test(header)) layout.name = i
+  }
+  // A code column and one of the two things worth having beside it. A list
+  // headed "Barkod;İlaç;Fiyat" names its product column something no synonym
+  // table will ever hold — the price column is still worth reading, and the
+  // name falls back to the per-line rule below.
+  return layout.barcode !== -1 && (layout.name !== -1 || layout.price !== -1) ? layout : null
+}
+
+/**
+ * Resolve one line of a list that named no columns. The cell that looks like a
+ * code is the code and the longest cell that isn't a figure is the name; of the
+ * figures, only one printed with a decimal is read as a price. A round "2"
+ * beside a product is a quantity far more often than a price, and a shelf price
+ * invented from one would be worse than no price at all.
+ */
+function resolveLine(cells: string[], codeAt: number): { name: string; price?: string } | null {
+  let nameAt = -1
+  let priceAt = -1
+  let longest = -1
+  cells.forEach((cell, i) => {
+    if (i === codeAt || !cell) return
+    if (longest === -1 || cell.length > cells[longest].length) longest = i
+    if (parseNumber(cell) === null) {
+      if (nameAt === -1 || cell.length > cells[nameAt].length) nameAt = i
+    } else if (decimalPlaces(cell) > 0) {
+      // The last figure on the line is the price when several are printed with
+      // decimals: lists put the quantity before the money, not after it.
+      if (priceAt === -1 || decimalPlaces(cell) >= decimalPlaces(cells[priceAt])) priceAt = i
+    }
+  })
+
+  // Every cell but the code is a figure — the longest is still the best name
+  // there is, and nothing on the line can be told apart as a price.
+  if (nameAt === -1) return longest === -1 ? null : { name: cells[longest] }
+  return { name: cells[nameAt], price: priceAt === -1 ? undefined : cells[priceAt] }
+}
+
+/**
+ * Read a pasted or uploaded list. The barcode may be in any column and the file
+ * may or may not have a header, so a header row is used when there is one and
+ * each line is resolved on its own when there isn't.
+ *
+ * A list can carry a price as well as a name — which is the only way to get a
+ * shelf price for medicines, since the drug registry publishes none.
  */
 export function parseCatalogList(text: string, source: string): ParsedList {
   const entries: CatalogEntry[] = []
   let skipped = 0
+  let priced = 0
+  let layout: ListLayout | null = null
+  let first = true
 
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith("#")) continue
 
     const cells = splitRow(trimmed).map((c) => c.trim().replace(/^"|"$/g, ""))
-    let codeAt = -1
-    for (let i = 0; i < cells.length; i++) {
-      if (normalizeBarcode(cells[i])) {
-        codeAt = i
-        break
-      }
+    if (first) {
+      first = false
+      layout = readListHeader(cells)
+      if (layout) continue
     }
+
+    const codeAt =
+      layout && normalizeBarcode(cells[layout.barcode] ?? "")
+        ? layout.barcode
+        : cells.findIndex((cell) => normalizeBarcode(cell))
     if (codeAt === -1) {
       skipped++
       continue
     }
 
-    let name = ""
-    cells.forEach((cell, i) => {
-      if (i === codeAt) return
-      if (cell.length > name.length) name = cell
-    })
+    // A named price column is taken as printed; without one, only a figure with
+    // a decimal counts. Either way the value is canonicalised on the way in.
+    const named = layout && codeAt === layout.barcode ? layout : null
+    const resolved = named
+      ? {
+          name:
+            named.name !== -1
+              ? (cells[named.name] ?? "")
+              : // The heading named a code column but not the product. Blank
+                // out the price it did name so the longest-cell rule can't
+                // pick it, and let that rule find the name.
+                (resolveLine(
+                  cells.map((cell, i) => (i === named.price ? "" : cell)),
+                  codeAt,
+                )?.name ?? ""),
+          price: named.price === -1 ? undefined : cells[named.price],
+        }
+      : resolveLine(cells, codeAt)
+    const name = resolved?.name?.trim()
     if (!name) {
       skipped++
       continue
     }
-    entries.push({ barcode: cells[codeAt], name, source })
+
+    const price = normalizePrice(resolved?.price)
+    if (price) priced++
+    entries.push({
+      barcode: cells[codeAt],
+      name,
+      source,
+      price,
+      brand: named && named.brand !== -1 ? cells[named.brand]?.trim() || undefined : undefined,
+    })
   }
 
-  return { entries, skipped }
+  return { entries, skipped, priced }
 }
 
 // ── Filling a column ──────────────────────────────────────────────────────
@@ -352,6 +530,8 @@ export interface FillOptions {
   mode: FillMode
   /** Extra catalog fields to spill into their own columns, with their headings. */
   extras?: Array<{ field: ExtraField; label: string }>
+  /** Decimal mark prices are printed with — "," under TR. */
+  decimal?: string
 }
 
 export interface FillResult {
@@ -362,8 +542,16 @@ export interface FillResult {
   barcodeRows: number
   /** Of those, how many found a name. */
   matched: number
+  /** Of those, how many found a price — the thing a shelf label needs. */
+  priced: number
   /** Distinct codes no source knew. */
   unmatched: string[]
+}
+
+/** What an extra field contributes to a row, printed for the sheet. */
+function extraValue(entry: CatalogEntry, field: ExtraField, decimal: string): string {
+  if (field === "price") return formatPrice(entry.price, decimal)
+  return entry[field] ?? ""
 }
 
 /**
@@ -376,8 +564,31 @@ export interface FillResult {
 export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): FillResult {
   const barcodeColumn = detectBarcodeColumn(sheet)
   if (barcodeColumn === -1) {
-    return { sheet, barcodeColumn, barcodeRows: 0, matched: 0, unmatched: [] }
+    return { sheet, barcodeColumn, barcodeRows: 0, matched: 0, priced: 0, unmatched: [] }
   }
+
+  const decimal = opts.decimal ?? "."
+  const unmatched = new Set<string>()
+  let barcodeRows = 0
+  let matched = 0
+  let priced = 0
+
+  // Resolve every row first. Which columns are worth adding depends on what the
+  // catalog actually knows about this sheet: a "Label price" column of nothing
+  // but blanks is a column the receiving program has to be told to ignore.
+  const hits = sheet.rows.map((row) => {
+    const digits = normalizeBarcode(row[barcodeColumn] ?? "")
+    if (!digits) return null
+    barcodeRows++
+    const hit = catalog.size ? lookupBarcode(catalog, digits) : null
+    if (!hit) {
+      unmatched.add(digits)
+      return null
+    }
+    matched++
+    if (hit.price) priced++
+    return hit
+  })
 
   const label = opts.label.trim() || "Product name"
   const nameColumn = opts.mode === "fill" ? detectNameColumn(sheet) : -1
@@ -393,33 +604,23 @@ export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): Fi
   if (!inPlace) columns.push(label)
 
   // Extras always get their own column: there is nothing in the document to
-  // fill for a manufacturer or a list price.
-  const extras = (opts.extras ?? []).map((extra) => {
-    columns.push(extra.label)
-    return { field: extra.field, at: columns.length - 1 }
-  })
+  // fill for a manufacturer or a shelf price.
+  const extras = (opts.extras ?? [])
+    .filter((extra) => hits.some((hit) => hit && extraValue(hit, extra.field, decimal)))
+    .map((extra) => {
+      columns.push(extra.label)
+      return { field: extra.field, at: columns.length - 1 }
+    })
 
-  const unmatched = new Set<string>()
-  let barcodeRows = 0
-  let matched = 0
-
-  const rows = sheet.rows.map((row) => {
+  const rows = sheet.rows.map((row, at) => {
     const out = [...row]
     while (out.length < columns.length) out.push("")
 
-    const digits = normalizeBarcode(out[barcodeColumn] ?? "")
-    if (!digits) return out
-    barcodeRows++
-
-    const hit = catalog.size ? lookupBarcode(catalog, digits) : null
-    if (!hit) {
-      unmatched.add(digits)
-      return out
-    }
-    matched++
+    const hit = hits[at]
+    if (!hit) return out
     // In place, an existing name is the document's own — only blanks are filled.
     if (!inPlace || !out[target].trim()) out[target] = hit.name
-    for (const extra of extras) out[extra.at] = hit[extra.field] ?? ""
+    for (const extra of extras) out[extra.at] = extraValue(hit, extra.field, decimal)
     return out
   })
 
@@ -428,6 +629,7 @@ export function fillNames(sheet: Sheet, catalog: Catalog, opts: FillOptions): Fi
     barcodeColumn,
     barcodeRows,
     matched,
+    priced,
     unmatched: [...unmatched],
   }
 }
