@@ -233,6 +233,26 @@ export function formatFigure(value: number, places: number, decimal: DecimalMark
   return value.toFixed(places).replace(".", decimal)
 }
 
+export const DATE_FORMAT = "dd.mm.yyyy"
+
+/**
+ * The .xlsx number format for a column: the places the document printed, and
+ * nothing else.
+ *
+ * Nothing else is the point. Excel puts what a cell *displays* on the
+ * clipboard, and these sheets exist to be pasted into a stock program, so
+ * every mark in the format is a mark that program has to read past. A
+ * thousands separator is the one it can mistake for a decimal point —
+ * "2.777,25" becomes 2,78, a wrong cost, silently. A unit is worse: nothing
+ * reads "2777,2500 TL" as a figure at all, and the column arrives empty.
+ * Whatever was printed around the figure belongs in the heading, not in
+ * a cell a machine has to parse.
+ */
+export function numberFormatFor(sheet: Sheet, columnIndex: number, mark?: DecimalMark): string {
+  const places = columnPlaces(sheet, columnIndex, mark)
+  return places > 0 ? `0.${"0".repeat(places)}` : "0"
+}
+
 export type ColumnKind = "number" | "date" | "text"
 
 /**

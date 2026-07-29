@@ -146,10 +146,13 @@ cell carrying both separators settles it, and so does any tail that isn't three
 digits long, since a thousands group is always exactly three. Columns that give
 no evidence, or give both, fall back to the cell-by-cell rule.
 
-Figures are written **without a thousands separator** — `2777,25`, not
-`2.777,25`. Excel puts what a cell *displays* on the clipboard, so grouping is
-the one part of a figure the next program can take for a decimal point, turning
-a cost of 2777,25 into 2,78 silently. CSV writes figures the same way, and
+A figure is written **as the figure and nothing else** — `2777,25`, not
+`2.777,25` and not `2777,25 TL`. Excel puts what a cell *displays* on the
+clipboard, so every mark in the number format is a mark the next program has to
+read past: a thousands separator it can take for a decimal point (2.777,25
+becomes 2,78, silently), and a unit it cannot read at all, which is the column
+arriving empty. Whatever was printed around the figure belongs in the heading.
+`npm test` holds that line. CSV writes figures the same way, and
 follows the language it is downloaded in — semicolon-delimited under **TR**,
 because Turkish Excel splits on semicolons and a comma-separated file would open
 as one column per row.

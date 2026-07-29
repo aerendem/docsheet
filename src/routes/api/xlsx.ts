@@ -1,32 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { detectBarcodeColumn } from "../../lib/barcode"
 import {
-  type DecimalMark,
-  columnPlaces,
+  DATE_FORMAT,
   inferColumnKinds,
   inferDecimalMarks,
+  numberFormatFor,
   parseDateCell,
   parseNumber,
 } from "../../lib/cell-value"
 import type { Sheet } from "../../lib/tiers"
 import { isAuthed } from "../../server/auth"
 import { loadWorkbook } from "../../server/node"
-
-const DATE_FORMAT = "dd.mm.yyyy"
-
-/**
- * Match the format to how the document printed it: 340,50 keeps two places.
- *
- * No thousands separator, deliberately. Excel puts what a cell *displays* on
- * the clipboard, and these sheets are made to be pasted into a stock program:
- * "2.777,25" read by something that takes the dot for the decimal point is
- * 2,78 — a wrong cost, silently — where "2777,25" is either read right or
- * refused outright.
- */
-function numberFormatFor(sheet: Sheet, columnIndex: number, mark?: DecimalMark): string {
-  const places = columnPlaces(sheet, columnIndex, mark)
-  return places > 0 ? `0.${"0".repeat(places)}` : "0"
-}
 
 function sanitizeFilename(name: string): string {
   const stem = (name.split(/[/\\]/).pop() ?? name).replace(/\.[^.]+$/, "")
